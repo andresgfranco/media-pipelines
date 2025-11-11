@@ -9,6 +9,7 @@ import streamlit as st
 
 from shared.aws import S3Storage, build_aws_resources
 from shared.config import get_runtime_config
+from shared.index import query_processed_media
 
 # Page config
 st.set_page_config(
@@ -88,37 +89,35 @@ def get_recent_executions(limit: int = 10) -> list[dict[str, Any]]:
 def get_asset_counts(campaign: str) -> dict[str, int]:
     """Get asset counts for a campaign."""
     try:
-        storage = get_s3_storage()
         runtime_config = get_runtime_config()
 
-        audio_raw = sum(
-            1
-            for _ in storage.list_keys(
-                bucket=runtime_config.aws.audio_bucket,
-                prefix=f"media-raw/audio/{campaign}/",
+        # Query indexed media
+        records = query_processed_media(campaign=campaign)
+
+        audio_processed = sum(1 for r in records if r.media_type == "audio")
+        video_processed = sum(1 for r in records if r.media_type == "video")
+
+        # Fallback to S3 for raw counts if index is empty
+        if not records:
+            storage = get_s3_storage()
+            audio_raw = sum(
+                1
+                for _ in storage.list_keys(
+                    bucket=runtime_config.aws.audio_bucket,
+                    prefix=f"media-raw/audio/{campaign}/",
+                )
             )
-        )
-        audio_processed = sum(
-            1
-            for _ in storage.list_keys(
-                bucket=runtime_config.aws.audio_bucket,
-                prefix=f"media-processed/audio/{campaign}/",
+            video_raw = sum(
+                1
+                for _ in storage.list_keys(
+                    bucket=runtime_config.aws.video_bucket,
+                    prefix=f"media-raw/video/{campaign}/",
+                )
             )
-        )
-        video_raw = sum(
-            1
-            for _ in storage.list_keys(
-                bucket=runtime_config.aws.video_bucket,
-                prefix=f"media-raw/video/{campaign}/",
-            )
-        )
-        video_processed = sum(
-            1
-            for _ in storage.list_keys(
-                bucket=runtime_config.aws.video_bucket,
-                prefix=f"media-processed/video/{campaign}/",
-            )
-        )
+        else:
+            # Estimate raw counts from processed (simplified)
+            audio_raw = audio_processed
+            video_raw = video_processed
 
         return {
             "audio_raw": audio_raw,

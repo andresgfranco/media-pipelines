@@ -8,7 +8,9 @@
       "Next": "AnalyzeAudio",
       "Retry": [
         {
-          "ErrorEquals": ["States.TaskFailed"],
+          "ErrorEquals": [
+            "States.TaskFailed"
+          ],
           "IntervalSeconds": 2,
           "MaxAttempts": 3,
           "BackoffRate": 2.0
@@ -16,7 +18,9 @@
       ],
       "Catch": [
         {
-          "ErrorEquals": ["States.ALL"],
+          "ErrorEquals": [
+            "States.ALL"
+          ],
           "Next": "IngestFailed",
           "ResultPath": "$.error"
         }
@@ -27,10 +31,12 @@
       "Resource": "${AnalyzeAudioFunctionArn}",
       "InputPath": "$",
       "ResultPath": "$.analysis",
-      "End": true,
+      "Next": "IndexAudio",
       "Retry": [
         {
-          "ErrorEquals": ["States.TaskFailed"],
+          "ErrorEquals": [
+            "States.TaskFailed"
+          ],
           "IntervalSeconds": 2,
           "MaxAttempts": 3,
           "BackoffRate": 2.0
@@ -38,8 +44,36 @@
       ],
       "Catch": [
         {
-          "ErrorEquals": ["States.ALL"],
+          "ErrorEquals": [
+            "States.ALL"
+          ],
           "Next": "AnalysisFailed",
+          "ResultPath": "$.error"
+        }
+      ]
+    },
+    "IndexAudio": {
+      "Type": "Task",
+      "Resource": "${IndexAudioFunctionArn}",
+      "InputPath": "$",
+      "ResultPath": "$.indexing",
+      "End": true,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.TaskFailed"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "IndexFailed",
           "ResultPath": "$.error"
         }
       ]
@@ -53,6 +87,11 @@
       "Type": "Fail",
       "Error": "AnalysisFailed",
       "Cause": "Audio analysis step failed"
+    },
+    "IndexFailed": {
+      "Type": "Fail",
+      "Error": "IndexFailed",
+      "Cause": "Audio indexing step failed"
     }
   }
 }

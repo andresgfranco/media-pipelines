@@ -8,7 +8,9 @@
       "Next": "StartRekognitionJobs",
       "Retry": [
         {
-          "ErrorEquals": ["States.TaskFailed"],
+          "ErrorEquals": [
+            "States.TaskFailed"
+          ],
           "IntervalSeconds": 2,
           "MaxAttempts": 3,
           "BackoffRate": 2.0
@@ -16,7 +18,9 @@
       ],
       "Catch": [
         {
-          "ErrorEquals": ["States.ALL"],
+          "ErrorEquals": [
+            "States.ALL"
+          ],
           "Next": "IngestFailed",
           "ResultPath": "$.error"
         }
@@ -30,7 +34,9 @@
       "Next": "ProcessRekognitionJobs",
       "Retry": [
         {
-          "ErrorEquals": ["States.TaskFailed"],
+          "ErrorEquals": [
+            "States.TaskFailed"
+          ],
           "IntervalSeconds": 2,
           "MaxAttempts": 3,
           "BackoffRate": 2.0
@@ -38,7 +44,9 @@
       ],
       "Catch": [
         {
-          "ErrorEquals": ["States.ALL"],
+          "ErrorEquals": [
+            "States.ALL"
+          ],
           "Next": "RekognitionStartFailed",
           "ResultPath": "$.error"
         }
@@ -98,10 +106,12 @@
       "Resource": "${FinalizeRekognitionFunctionArn}",
       "InputPath": "$",
       "ResultPath": "$.finalization",
-      "End": true,
+      "Next": "IndexVideo",
       "Retry": [
         {
-          "ErrorEquals": ["States.TaskFailed"],
+          "ErrorEquals": [
+            "States.TaskFailed"
+          ],
           "IntervalSeconds": 2,
           "MaxAttempts": 3,
           "BackoffRate": 2.0
@@ -109,8 +119,36 @@
       ],
       "Catch": [
         {
-          "ErrorEquals": ["States.ALL"],
+          "ErrorEquals": [
+            "States.ALL"
+          ],
           "Next": "FinalizationFailed",
+          "ResultPath": "$.error"
+        }
+      ]
+    },
+    "IndexVideo": {
+      "Type": "Task",
+      "Resource": "${IndexVideoFunctionArn}",
+      "InputPath": "$",
+      "ResultPath": "$.indexing",
+      "End": true,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.TaskFailed"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "IndexFailed",
           "ResultPath": "$.error"
         }
       ]
@@ -129,6 +167,11 @@
       "Type": "Fail",
       "Error": "FinalizationFailed",
       "Cause": "Rekognition finalization step failed"
+    },
+    "IndexFailed": {
+      "Type": "Fail",
+      "Error": "IndexFailed",
+      "Cause": "Video indexing step failed"
     }
   }
 }
