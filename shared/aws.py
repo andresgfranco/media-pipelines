@@ -128,6 +128,7 @@ def build_aws_resources(
         "dynamodb": session_factory.client("dynamodb", config=boto_cfg),
         "stepfunctions": session_factory.client("stepfunctions", config=boto_cfg),
         "rekognition": session_factory.client("rekognition", config=boto_cfg),
+        "sns": session_factory.client("sns", config=boto_cfg),
     }
     return clients
 

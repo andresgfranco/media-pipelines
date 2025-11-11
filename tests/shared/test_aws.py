@@ -23,7 +23,7 @@ def test_build_aws_resources_creates_clients_with_config():
 
     clients = aws_utils.build_aws_resources(aws_config=aws_config)
 
-    assert set(clients.keys()) == {"s3", "dynamodb", "stepfunctions", "rekognition"}
+    assert set(clients.keys()) == {"s3", "dynamodb", "stepfunctions", "rekognition", "sns"}
     assert clients["s3"].meta.region_name == "us-east-1"
 
 
