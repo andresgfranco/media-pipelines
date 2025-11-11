@@ -18,7 +18,7 @@ Both pipelines run on a schedule, and a tiny Streamlit dashboard lets anyone fir
 - **Notifications**: optional Amazon SNS
 
 **External sources**
-- 🎵 Freesound API for Creative Commons audio
+- 🎵 Internet Archive API for Creative Commons audio
 - 🎬 Wikimedia Commons API for Creative Commons video (ready to add Pexels or Pixabay if needed)
 
 APIs were selected because they ship legal, attribution-friendly assets without manual uploads, keeping the MVP realistic and fast to deliver.
@@ -36,7 +36,7 @@ APIs were selected because they ship legal, attribution-friendly assets without 
 ### 🎧 Audio pipeline (Creative Commons curation)
 1. **Ingest Lambda**
    - Reads campaign plus `batch_size_audio`.
-   - Queries Freesound with keyword and Creative Commons filters.
+   - Queries Internet Archive with keyword and Creative Commons filters.
    - Downloads clips to `s3://media-raw/audio/<campaign>/<timestamp>/`.
    - Stores source metadata (title, author, license, URL).
 

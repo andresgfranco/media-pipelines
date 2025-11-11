@@ -1,4 +1,4 @@
-"""Audio ingestion from Freesound API."""
+"""Audio ingestion from Internet Archive API."""
 
 from __future__ import annotations
 
@@ -15,15 +15,48 @@ from shared.config import AwsConfig, get_runtime_config
 
 LOGGER = logging.getLogger(__name__)
 
-FREESOUND_API_BASE = "https://freesound.org/apiv2"
-CC_LICENSE_FILTER = "license:(cc0 OR cc-by OR cc-by-sa)"
+INTERNET_ARCHIVE_SEARCH_URL = "https://archive.org/advancedsearch.php"
+INTERNET_ARCHIVE_METADATA_URL = "https://archive.org/metadata"
+MIN_DURATION_SECONDS = 0.5
+MAX_DURATION_SECONDS = 60.0
+
+
+def _parse_duration(duration_str: str | float | int) -> float:
+    """Parse duration string to seconds.
+
+    Handles formats:
+    - Numeric string: "5.5" -> 5.5
+    - Time format: "00:10" -> 10.0
+    - Already numeric: 5.5 -> 5.5
+    """
+    if isinstance(duration_str, int | float):
+        return float(duration_str)
+
+    duration_str = str(duration_str).strip()
+
+    # Try parsing as MM:SS format
+    if ":" in duration_str:
+        parts = duration_str.split(":")
+        if len(parts) == 2:
+            try:
+                minutes = float(parts[0])
+                seconds = float(parts[1])
+                return (minutes * 60) + seconds
+            except ValueError:
+                pass
+
+    # Try parsing as numeric string
+    try:
+        return float(duration_str)
+    except ValueError:
+        return 0.0
 
 
 @dataclass(frozen=True, slots=True)
 class AudioMetadata:
     """Metadata for an ingested audio file."""
 
-    freesound_id: int
+    archive_id: str
     title: str
     author: str
     license: str
@@ -35,52 +68,89 @@ class AudioMetadata:
     ingested_at: str
 
 
-class FreesoundClient:
-    """Client for Freesound API."""
+class InternetArchiveClient:
+    """Client for Internet Archive API."""
 
-    def __init__(self, api_key: str) -> None:
-        self.api_key = api_key
+    def __init__(self) -> None:
         self.session = requests.Session()
-        self.session.headers.update({"Authorization": f"Token {api_key}"})
 
     def search(
         self,
         query: str,
         *,
-        page_size: int = 5,
-        fields: str = "id,name,username,license,url,duration,filesize,tags",
+        rows: int = 5,
     ) -> list[dict[str, Any]]:
         """Search for Creative Commons audio files."""
+        search_query = f"title:{query} AND mediatype:audio AND licenseurl:*creativecommons*"
         params = {
-            "query": f"{query} {CC_LICENSE_FILTER}",
-            "page_size": page_size,
-            "fields": fields,
-            "filter": "duration:[0.5 TO 60]",
+            "q": search_query,
+            "fl": "identifier,title,creator,date,licenseurl,downloads",
+            "output": "json",
+            "rows": rows,
         }
-        response = self.session.get(f"{FREESOUND_API_BASE}/search/text/", params=params, timeout=30)
+        response = self.session.get(INTERNET_ARCHIVE_SEARCH_URL, params=params, timeout=30)
         response.raise_for_status()
         data = response.json()
-        return data.get("results", [])
+        return data.get("response", {}).get("docs", [])
 
-    def download_preview(self, sound_id: int) -> bytes:
-        """Download preview audio file."""
-        response = self.session.get(
-            f"{FREESOUND_API_BASE}/sounds/{sound_id}/download/",
-            timeout=60,
-        )
+    def get_metadata(self, identifier: str) -> dict[str, Any]:
+        """Get detailed metadata for an item, including file information."""
+        url = f"{INTERNET_ARCHIVE_METADATA_URL}/{identifier}"
+        response = self.session.get(url, timeout=30)
+        response.raise_for_status()
+        return response.json()
+
+    def download_file(self, identifier: str, filename: str) -> bytes:
+        """Download audio file from Internet Archive."""
+        url = f"https://archive.org/download/{identifier}/{filename}"
+        response = self.session.get(url, timeout=60)
         response.raise_for_status()
         return response.content
+
+    def select_audio_file(self, files: list[dict[str, Any]]) -> dict[str, Any] | None:
+        """Select the best audio file from available files."""
+        # Filter for audio formats
+        audio_formats = ["VBR MP3", "64Kbps MP3", "128Kbps MP3", "OGG VORBIS"]
+        audio_files = []
+
+        for f in files:
+            if f.get("format") not in audio_formats:
+                continue
+
+            length_str = f.get("length")
+            if not length_str:
+                continue
+
+            try:
+                duration = _parse_duration(length_str)
+                if MIN_DURATION_SECONDS <= duration <= MAX_DURATION_SECONDS:
+                    audio_files.append(f)
+            except (ValueError, TypeError):
+                # Skip files with invalid duration format
+                continue
+
+        if not audio_files:
+            return None
+
+        # Prefer VBR MP3, then 128Kbps MP3, then others
+        preferred_order = ["VBR MP3", "128Kbps MP3", "64Kbps MP3", "OGG VORBIS"]
+        for format_type in preferred_order:
+            for f in audio_files:
+                if f.get("format") == format_type:
+                    return f
+
+        # Fallback to first audio file
+        return audio_files[0]
 
 
 def ingest_audio_batch(
     *,
     campaign: str,
     batch_size: int,
-    freesound_api_key: str,
     s3_client: BaseClient | None = None,
     aws_config: AwsConfig | None = None,
 ) -> list[AudioMetadata]:
-    """Ingest a batch of Creative Commons audio files from Freesound."""
+    """Ingest a batch of Creative Commons audio files from Internet Archive."""
     if aws_config is None:
         runtime_config = get_runtime_config()
         aws_config = runtime_config.aws
@@ -92,10 +162,10 @@ def ingest_audio_batch(
         s3_client = resources["s3"]
 
     storage = S3Storage(s3_client)
-    client = FreesoundClient(freesound_api_key)
+    client = InternetArchiveClient()
 
-    LOGGER.info("Searching Freesound for campaign: %s (batch_size=%d)", campaign, batch_size)
-    results = client.search(campaign, page_size=batch_size)
+    LOGGER.info("Searching Internet Archive for campaign: %s (batch_size=%d)", campaign, batch_size)
+    results = client.search(campaign, rows=batch_size)
 
     if not results:
         LOGGER.warning("No results found for campaign: %s", campaign)
@@ -104,48 +174,81 @@ def ingest_audio_batch(
     metadata_list = []
     timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
 
-    for sound in results:
-        sound_id = sound["id"]
-        LOGGER.info("Downloading sound ID: %d", sound_id)
+    for item in results:
+        identifier = item.get("identifier")
+        if not identifier:
+            continue
+
+        LOGGER.info("Processing item: %s", identifier)
 
         try:
-            audio_data = invoke_with_retry(
-                lambda: client.download_preview(sound_id),
+            # Get detailed metadata including files
+            item_metadata = invoke_with_retry(
+                lambda: client.get_metadata(identifier),
                 max_attempts=3,
             )
 
-            s3_key = f"media-raw/audio/{campaign}/{timestamp}/{sound_id}.mp3"
+            files = item_metadata.get("files", [])
+            selected_file = client.select_audio_file(files)
+
+            if not selected_file:
+                LOGGER.warning(
+                    "No suitable audio file found for item: %s (duration or format filter)",
+                    identifier,
+                )
+                continue
+
+            filename = selected_file.get("name")
+            duration = _parse_duration(selected_file.get("length", 0))
+            file_size = int(selected_file.get("size", 0))
+
+            # Download the file
+            LOGGER.info("Downloading file: %s from item: %s", filename, identifier)
+            audio_data = invoke_with_retry(
+                lambda: client.download_file(identifier, filename),
+                max_attempts=3,
+            )
+
+            # Determine content type
+            content_type = "audio/mpeg"
+            if filename.endswith(".ogg"):
+                content_type = "audio/ogg"
+
+            s3_key = f"media-raw/audio/{campaign}/{timestamp}/{identifier}_{filename}"
             metadata_dict = {
-                "freesound_id": str(sound_id),
-                "title": sound.get("name", ""),
-                "author": sound.get("username", ""),
-                "license": sound.get("license", ""),
+                "archive_id": identifier,
+                "title": item.get("title", ""),
+                "author": item.get("creator", "Unknown"),
+                "license": item.get("licenseurl", ""),
             }
 
             storage.upload_bytes(
                 bucket=aws_config.audio_bucket,
                 key=s3_key,
                 data=audio_data,
-                content_type="audio/mpeg",
+                content_type=content_type,
                 metadata=metadata_dict,
             )
 
+            # Build item URL
+            item_url = f"https://archive.org/details/{identifier}"
+
             metadata = AudioMetadata(
-                freesound_id=sound_id,
-                title=sound.get("name", ""),
-                author=sound.get("username", ""),
-                license=sound.get("license", ""),
-                url=sound.get("url", ""),
-                duration=sound.get("duration", 0.0),
-                file_size=sound.get("filesize", 0),
-                tags=sound.get("tags", []),
+                archive_id=identifier,
+                title=item.get("title", ""),
+                author=item.get("creator", "Unknown"),
+                license=item.get("licenseurl", ""),
+                url=item_url,
+                duration=duration,
+                file_size=file_size,
+                tags=[],  # Internet Archive doesn't provide tags in search results
                 s3_key=s3_key,
                 ingested_at=timestamp,
             )
             metadata_list.append(metadata)
 
         except Exception as e:
-            LOGGER.error("Failed to ingest sound ID %d: %s", sound_id, e, exc_info=True)
+            LOGGER.error("Failed to ingest item %s: %s", identifier, e, exc_info=True)
             continue
 
     LOGGER.info("Ingested %d audio files for campaign: %s", len(metadata_list), campaign)

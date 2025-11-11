@@ -9,38 +9,54 @@ from botocore.client import BaseClient
 
 from audio_pipeline.ingest import (
     AudioMetadata,
-    FreesoundClient,
+    InternetArchiveClient,
     ingest_audio_batch,
 )
 from shared.config import AwsConfig
 
 
 @pytest.fixture
-def mock_freesound_response():
-    """Mock Freesound API search response."""
+def mock_internet_archive_search_response():
+    """Mock Internet Archive API search response."""
     return {
-        "results": [
+        "response": {
+            "docs": [
+                {
+                    "identifier": "test-item-1",
+                    "title": "Test Sound",
+                    "creator": "testuser",
+                    "licenseurl": "https://creativecommons.org/licenses/by/4.0/",
+                    "downloads": 100,
+                },
+                {
+                    "identifier": "test-item-2",
+                    "title": "Another Sound",
+                    "creator": "anotheruser",
+                    "licenseurl": "https://creativecommons.org/publicdomain/zero/1.0/",
+                    "downloads": 50,
+                },
+            ]
+        }
+    }
+
+
+@pytest.fixture
+def mock_internet_archive_metadata():
+    """Mock Internet Archive metadata response."""
+    return {
+        "metadata": {
+            "identifier": "test-item-1",
+            "title": "Test Sound",
+            "creator": "testuser",
+        },
+        "files": [
             {
-                "id": 12345,
-                "name": "Test Sound",
-                "username": "testuser",
-                "license": "cc-by",
-                "url": "https://freesound.org/people/testuser/sounds/12345/",
-                "duration": 5.5,
-                "filesize": 102400,
-                "tags": ["test", "demo"],
-            },
-            {
-                "id": 67890,
-                "name": "Another Sound",
-                "username": "anotheruser",
-                "license": "cc0",
-                "url": "https://freesound.org/people/anotheruser/sounds/67890/",
-                "duration": 3.2,
-                "filesize": 51200,
-                "tags": ["music"],
-            },
-        ]
+                "name": "test-sound.mp3",
+                "format": "VBR MP3",
+                "size": "102400",
+                "length": "5.5",
+            }
+        ],
     }
 
 
@@ -63,51 +79,85 @@ def aws_config():
     )
 
 
-def test_freesound_client_search(mock_freesound_response):
-    """Test Freesound client search."""
+def test_internet_archive_client_search(mock_internet_archive_search_response):
+    """Test Internet Archive client search."""
     with patch("audio_pipeline.ingest.requests.Session") as mock_session:
         mock_response = MagicMock()
-        mock_response.json.return_value = mock_freesound_response
+        mock_response.json.return_value = mock_internet_archive_search_response
         mock_response.raise_for_status = MagicMock()
         mock_session.return_value.get.return_value = mock_response
 
-        client = FreesoundClient("test-api-key")
-        results = client.search("nature", page_size=2)
+        client = InternetArchiveClient()
+        results = client.search("nature", rows=2)
 
         assert len(results) == 2
-        assert results[0]["id"] == 12345
-        assert results[0]["name"] == "Test Sound"
-        assert results[1]["id"] == 67890
+        assert results[0]["identifier"] == "test-item-1"
+        assert results[0]["title"] == "Test Sound"
+        assert results[1]["identifier"] == "test-item-2"
 
 
-def test_freesound_client_download_preview():
-    """Test Freesound client download."""
+def test_internet_archive_client_get_metadata(mock_internet_archive_metadata):
+    """Test Internet Archive client get metadata."""
+    with patch("audio_pipeline.ingest.requests.Session") as mock_session:
+        mock_response = MagicMock()
+        mock_response.json.return_value = mock_internet_archive_metadata
+        mock_response.raise_for_status = MagicMock()
+        mock_session.return_value.get.return_value = mock_response
+
+        client = InternetArchiveClient()
+        metadata = client.get_metadata("test-item-1")
+
+        assert metadata["metadata"]["identifier"] == "test-item-1"
+        assert len(metadata["files"]) == 1
+
+
+def test_internet_archive_client_download_file():
+    """Test Internet Archive client download."""
     with patch("audio_pipeline.ingest.requests.Session") as mock_session:
         mock_response = MagicMock()
         mock_response.content = b"fake audio data"
         mock_response.raise_for_status = MagicMock()
         mock_session.return_value.get.return_value = mock_response
 
-        client = FreesoundClient("test-api-key")
-        data = client.download_preview(12345)
+        client = InternetArchiveClient()
+        data = client.download_file("test-item-1", "test-sound.mp3")
 
         assert data == b"fake audio data"
+
+
+def test_internet_archive_client_select_audio_file():
+    """Test Internet Archive client file selection."""
+    client = InternetArchiveClient()
+
+    files = [
+        {"name": "short.mp3", "format": "VBR MP3", "length": "0.1", "size": "1000"},
+        {"name": "good.mp3", "format": "VBR MP3", "length": "5.5", "size": "102400"},
+        {"name": "long.mp3", "format": "VBR MP3", "length": "120", "size": "204800"},
+        {"name": "ogg.ogg", "format": "OGG VORBIS", "length": "3.2", "size": "51200"},
+    ]
+
+    selected = client.select_audio_file(files)
+    assert selected is not None
+    assert selected["name"] == "good.mp3"  # Should select VBR MP3 with valid duration
 
 
 @patch("audio_pipeline.ingest.get_runtime_config")
 def test_ingest_audio_batch(
     mock_get_config,
-    mock_freesound_response,
+    mock_internet_archive_search_response,
+    mock_internet_archive_metadata,
     mock_s3_client,
     aws_config,
 ):
     """Test audio batch ingestion."""
     mock_get_config.return_value.aws = aws_config
 
-    with patch("audio_pipeline.ingest.FreesoundClient") as mock_client_class:
+    with patch("audio_pipeline.ingest.InternetArchiveClient") as mock_client_class:
         mock_client = MagicMock()
-        mock_client.search.return_value = mock_freesound_response["results"]
-        mock_client.download_preview.side_effect = [
+        mock_client.search.return_value = mock_internet_archive_search_response["response"]["docs"]
+        mock_client.get_metadata.return_value = mock_internet_archive_metadata
+        mock_client.select_audio_file.return_value = mock_internet_archive_metadata["files"][0]
+        mock_client.download_file.side_effect = [
             b"fake audio data 1",
             b"fake audio data 2",
         ]
@@ -116,16 +166,15 @@ def test_ingest_audio_batch(
         metadata_list = ingest_audio_batch(
             campaign="nature",
             batch_size=2,
-            freesound_api_key="test-key",
             s3_client=mock_s3_client,
             aws_config=aws_config,
         )
 
         assert len(metadata_list) == 2
-        assert metadata_list[0].freesound_id == 12345
+        assert metadata_list[0].archive_id == "test-item-1"
         assert metadata_list[0].title == "Test Sound"
         assert "nature" in metadata_list[0].s3_key
-        assert metadata_list[1].freesound_id == 67890
+        assert metadata_list[1].archive_id == "test-item-2"
 
         # Verify S3 uploads were called
         assert mock_s3_client.put_object.call_count == 2
@@ -133,7 +182,7 @@ def test_ingest_audio_batch(
 
 def test_ingest_audio_batch_empty_results(mock_s3_client, aws_config):
     """Test ingestion with no search results."""
-    with patch("audio_pipeline.ingest.FreesoundClient") as mock_client_class:
+    with patch("audio_pipeline.ingest.InternetArchiveClient") as mock_client_class:
         mock_client = MagicMock()
         mock_client.search.return_value = []
         mock_client_class.return_value = mock_client
@@ -141,7 +190,6 @@ def test_ingest_audio_batch_empty_results(mock_s3_client, aws_config):
         metadata_list = ingest_audio_batch(
             campaign="nonexistent",
             batch_size=5,
-            freesound_api_key="test-key",
             s3_client=mock_s3_client,
             aws_config=aws_config,
         )
@@ -153,19 +201,19 @@ def test_ingest_audio_batch_empty_results(mock_s3_client, aws_config):
 def test_audio_metadata():
     """Test AudioMetadata dataclass."""
     metadata = AudioMetadata(
-        freesound_id=12345,
+        archive_id="test-item-1",
         title="Test Sound",
         author="testuser",
-        license="cc-by",
-        url="https://example.com/sound",
+        license="https://creativecommons.org/licenses/by/4.0/",
+        url="https://archive.org/details/test-item-1",
         duration=5.5,
         file_size=102400,
-        tags=["test", "demo"],
-        s3_key="media-raw/audio/nature/20240101_120000/12345.mp3",
+        tags=[],
+        s3_key="media-raw/audio/nature/20240101_120000/test-item-1_test-sound.mp3",
         ingested_at="20240101_120000",
     )
 
-    assert metadata.freesound_id == 12345
+    assert metadata.archive_id == "test-item-1"
     assert metadata.title == "Test Sound"
     assert metadata.author == "testuser"
-    assert metadata.license == "cc-by"
+    assert metadata.license == "https://creativecommons.org/licenses/by/4.0/"

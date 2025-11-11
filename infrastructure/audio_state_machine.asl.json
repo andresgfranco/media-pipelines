@@ -8,9 +8,7 @@
       "Next": "AnalyzeAudio",
       "Retry": [
         {
-          "ErrorEquals": [
-            "States.TaskFailed"
-          ],
+          "ErrorEquals": ["States.TaskFailed"],
           "IntervalSeconds": 2,
           "MaxAttempts": 3,
           "BackoffRate": 2.0
@@ -18,9 +16,7 @@
       ],
       "Catch": [
         {
-          "ErrorEquals": [
-            "States.ALL"
-          ],
+          "ErrorEquals": ["States.ALL"],
           "Next": "IngestFailed",
           "ResultPath": "$.error"
         }
@@ -34,9 +30,7 @@
       "Next": "IndexAudio",
       "Retry": [
         {
-          "ErrorEquals": [
-            "States.TaskFailed"
-          ],
+          "ErrorEquals": ["States.TaskFailed"],
           "IntervalSeconds": 2,
           "MaxAttempts": 3,
           "BackoffRate": 2.0
@@ -44,9 +38,7 @@
       ],
       "Catch": [
         {
-          "ErrorEquals": [
-            "States.ALL"
-          ],
+          "ErrorEquals": ["States.ALL"],
           "Next": "AnalysisFailed",
           "ResultPath": "$.error"
         }
@@ -60,9 +52,7 @@
       "End": true,
       "Retry": [
         {
-          "ErrorEquals": [
-            "States.TaskFailed"
-          ],
+          "ErrorEquals": ["States.TaskFailed"],
           "IntervalSeconds": 2,
           "MaxAttempts": 3,
           "BackoffRate": 2.0
@@ -70,9 +60,7 @@
       ],
       "Catch": [
         {
-          "ErrorEquals": [
-            "States.ALL"
-          ],
+          "ErrorEquals": ["States.ALL"],
           "Next": "IndexFailed",
           "ResultPath": "$.error"
         }

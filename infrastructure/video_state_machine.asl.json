@@ -8,9 +8,7 @@
       "Next": "StartRekognitionJobs",
       "Retry": [
         {
-          "ErrorEquals": [
-            "States.TaskFailed"
-          ],
+          "ErrorEquals": ["States.TaskFailed"],
           "IntervalSeconds": 2,
           "MaxAttempts": 3,
           "BackoffRate": 2.0
@@ -18,9 +16,7 @@
       ],
       "Catch": [
         {
-          "ErrorEquals": [
-            "States.ALL"
-          ],
+          "ErrorEquals": ["States.ALL"],
           "Next": "IngestFailed",
           "ResultPath": "$.error"
         }
@@ -34,9 +30,7 @@
       "Next": "ProcessRekognitionJobs",
       "Retry": [
         {
-          "ErrorEquals": [
-            "States.TaskFailed"
-          ],
+          "ErrorEquals": ["States.TaskFailed"],
           "IntervalSeconds": 2,
           "MaxAttempts": 3,
           "BackoffRate": 2.0
@@ -44,9 +38,7 @@
       ],
       "Catch": [
         {
-          "ErrorEquals": [
-            "States.ALL"
-          ],
+          "ErrorEquals": ["States.ALL"],
           "Next": "RekognitionStartFailed",
           "ResultPath": "$.error"
         }
@@ -109,9 +101,7 @@
       "Next": "IndexVideo",
       "Retry": [
         {
-          "ErrorEquals": [
-            "States.TaskFailed"
-          ],
+          "ErrorEquals": ["States.TaskFailed"],
           "IntervalSeconds": 2,
           "MaxAttempts": 3,
           "BackoffRate": 2.0
@@ -119,9 +109,7 @@
       ],
       "Catch": [
         {
-          "ErrorEquals": [
-            "States.ALL"
-          ],
+          "ErrorEquals": ["States.ALL"],
           "Next": "FinalizationFailed",
           "ResultPath": "$.error"
         }
@@ -135,9 +123,7 @@
       "End": true,
       "Retry": [
         {
-          "ErrorEquals": [
-            "States.TaskFailed"
-          ],
+          "ErrorEquals": ["States.TaskFailed"],
           "IntervalSeconds": 2,
           "MaxAttempts": 3,
           "BackoffRate": 2.0
@@ -145,9 +131,7 @@
       ],
       "Catch": [
         {
-          "ErrorEquals": [
-            "States.ALL"
-          ],
+          "ErrorEquals": ["States.ALL"],
           "Next": "IndexFailed",
           "ResultPath": "$.error"
         }

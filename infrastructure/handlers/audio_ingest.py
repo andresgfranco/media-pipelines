@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 
 from audio_pipeline.ingest import ingest_audio_batch
 from shared.config import get_runtime_config
@@ -18,10 +17,6 @@ def handler(event: dict, context: object) -> dict:
         # Extract parameters from event
         campaign = event.get("campaign", "default")
         batch_size = int(event.get("batch_size_audio", 5))
-        freesound_api_key = os.environ.get("FREESOUND_API_KEY")
-
-        if not freesound_api_key:
-            raise ValueError("FREESOUND_API_KEY environment variable not set")
 
         # Get AWS configuration
         runtime_config = get_runtime_config()
@@ -33,11 +28,10 @@ def handler(event: dict, context: object) -> dict:
             batch_size,
         )
 
-        # Ingest audio batch
+        # Ingest audio batch (no API key needed for Internet Archive)
         metadata_list = ingest_audio_batch(
             campaign=campaign,
             batch_size=batch_size,
-            freesound_api_key=freesound_api_key,
             aws_config=aws_config,
         )
 
@@ -48,7 +42,7 @@ def handler(event: dict, context: object) -> dict:
             "ingested_count": len(metadata_list),
             "metadata": [
                 {
-                    "freesound_id": m.freesound_id,
+                    "archive_id": m.archive_id,
                     "title": m.title,
                     "author": m.author,
                     "license": m.license,
