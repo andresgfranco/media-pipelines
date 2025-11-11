@@ -108,6 +108,82 @@ Streamlit Community Cloud is the fastest way to share it; App Runner or Fargate 
 
 ---
 
+### 🚀 Getting Started
+
+#### Prerequisites
+- Python 3.11+ (or 3.10+ for local development)
+- AWS account with appropriate permissions (S3, Lambda, Step Functions, DynamoDB, Rekognition, EventBridge, SNS)
+- AWS credentials configured (`~/.aws/credentials` or environment variables)
+
+#### Installation
+
+```bash
+# Clone the repository
+git clone https://github.com/andresgfranco/media-pipelines.git
+cd media-pipelines
+
+# Create virtual environment
+python -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+
+# Install dependencies
+pip install -e '.[dev,audio]'
+
+# Install pre-commit hooks
+pre-commit install
+```
+
+#### Configuration
+
+Set environment variables or create a `.env` file:
+
+```bash
+export MEDIA_PIPELINES_AUDIO_BUCKET=your-audio-bucket
+export MEDIA_PIPELINES_VIDEO_BUCKET=your-video-bucket
+export MEDIA_PIPELINES_METADATA_TABLE=your-metadata-table
+export MEDIA_PIPELINES_AWS_REGION=us-east-1
+export AWS_ACCESS_KEY_ID=your-access-key
+export AWS_SECRET_ACCESS_KEY=your-secret-key
+```
+
+#### Running Tests
+
+```bash
+# Run all tests
+pytest
+
+# Run smoke tests
+pytest tests/smoke_test.py -v
+
+# Run with coverage
+pytest --cov=shared --cov=audio_pipeline --cov=video_pipeline
+```
+
+#### Running the Dashboard Locally
+
+```bash
+streamlit run dashboard/app.py
+```
+
+See [docs/streamlit-deploy.md](docs/streamlit-deploy.md) for Streamlit Cloud deployment instructions.
+
+#### Triggering Pipelines Manually
+
+```bash
+# Trigger audio pipeline
+python infrastructure/schedule_trigger.py audio nature 5
+
+# Trigger video pipeline
+python infrastructure/schedule_trigger.py video nature 2
+
+# Trigger both
+python infrastructure/schedule_trigger.py both nature 5
+```
+
+See [docs/scheduling.md](docs/scheduling.md) for EventBridge scheduling configuration.
+
+---
+
 ### 🤔 Why this scope?
 - Covers the core responsibilities of a data pipeline: ingestion from external APIs, enrichment, orchestration, and observability.
 - Fits in a single day while still showcasing modern AWS patterns and clean documentation.
