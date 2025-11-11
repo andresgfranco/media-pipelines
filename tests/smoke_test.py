@@ -16,7 +16,6 @@ def setup_config():
     """Set up runtime configuration for smoke tests."""
     set_runtime_config(
         environment="test",
-        audio_bucket="test-audio-bucket",
         video_bucket="test-video-bucket",
         metadata_table="test-metadata-table",
         region="us-east-1",
@@ -32,7 +31,6 @@ def test_aws_resources_creation():
     """Smoke test: Verify AWS resources can be created."""
     aws_config = AwsConfig(
         region="us-east-1",
-        audio_bucket="test-audio-bucket",
         video_bucket="test-video-bucket",
         metadata_table="test-metadata-table",
     )
@@ -53,7 +51,6 @@ def test_indexing_workflow():
 
     aws_config = AwsConfig(
         region="us-east-1",
-        audio_bucket="test-audio-bucket",
         video_bucket="test-video-bucket",
         metadata_table="test-metadata-table",
     )
@@ -71,19 +68,19 @@ def test_indexing_workflow():
 
     # Index media
     index_processed_media(
-        media_type="audio",
+        media_type="video",
         campaign="nature",
-        s3_key="media-raw/audio/nature/20240101_120000/test.mp3",
-        processed_key="media-processed/audio/nature/20240101_120000/test.json",
+        s3_key="media-raw/video/wikimedia/nature/20240101_120000/test.mp4",
+        processed_key="media-processed/video/wikimedia/nature/20240101_120000/test_labels.json",
         ingested_at="20240101_120000",
-        metadata={"duration": 10.5},
+        metadata={"labels": [{"Name": "Nature", "Confidence": 95.5}]},
         aws_config=aws_config,
     )
 
     # Query indexed media
     records = query_processed_media(campaign="nature", aws_config=aws_config)
     assert len(records) == 1
-    assert records[0].media_type == "audio"
+    assert records[0].media_type == "video"
     assert records[0].campaign == "nature"
 
 
@@ -97,14 +94,13 @@ def test_notification_system():
 
     aws_config = AwsConfig(
         region="us-east-1",
-        audio_bucket="test-audio-bucket",
         video_bucket="test-video-bucket",
         metadata_table="test-metadata-table",
     )
 
     result = send_pipeline_notification(
         topic_arn="arn:aws:sns:us-east-1:123456789012:test-topic",
-        pipeline_type="audio",
+        pipeline_type="video",
         campaign="nature",
         status="SUCCEEDED",
         sns_client=mock_sns,
@@ -122,7 +118,6 @@ def test_state_machine_trigger():
 
     aws_config = AwsConfig(
         region="us-east-1",
-        audio_bucket="test-audio-bucket",
         video_bucket="test-video-bucket",
         metadata_table="test-metadata-table",
     )
@@ -151,12 +146,6 @@ def test_state_machine_trigger():
 
 def test_imports():
     """Smoke test: Verify all main modules can be imported."""
-    # Audio pipeline
-    from audio_pipeline import analyze, ingest
-
-    assert ingest is not None
-    assert analyze is not None
-
     # Video pipeline
     from video_pipeline import finalize, ingest, rekognition
 
@@ -174,9 +163,6 @@ def test_imports():
 
     # Infrastructure handlers
     from infrastructure.handlers import (
-        audio_analyze,
-        audio_ingest,
-        index_audio,
         index_video,
         video_ingest,
         video_rekognition_check,
@@ -184,11 +170,8 @@ def test_imports():
         video_rekognition_start,
     )
 
-    assert audio_ingest is not None
-    assert audio_analyze is not None
     assert video_ingest is not None
     assert video_rekognition_start is not None
     assert video_rekognition_check is not None
     assert video_rekognition_finalize is not None
-    assert index_audio is not None
     assert index_video is not None

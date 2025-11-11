@@ -41,7 +41,6 @@ fi
 
 # Resource names
 PROJECT_PREFIX="media-pipelines"
-AUDIO_BUCKET="${PROJECT_PREFIX}-audio-${TIMESTAMP}"
 VIDEO_BUCKET="${PROJECT_PREFIX}-video-${TIMESTAMP}"
 METADATA_TABLE="${PROJECT_PREFIX}-metadata"
 LAMBDA_ROLE_NAME="${PROJECT_PREFIX}-lambda-execution-role"
@@ -51,16 +50,14 @@ SNS_TOPIC_NAME="${PROJECT_PREFIX}-notifications"
 echo "📍 Configuration:"
 echo "   Region: $REGION"
 echo "   Account ID: $ACCOUNT_ID"
-echo "   Audio Bucket: $AUDIO_BUCKET"
 echo "   Video Bucket: $VIDEO_BUCKET"
 echo "   Metadata Table: $METADATA_TABLE"
 echo ""
 
 # Step 1: Create S3 buckets
 echo "📦 Step 1: Creating S3 buckets..."
-aws s3 mb "s3://${AUDIO_BUCKET}" --region "$REGION" 2>/dev/null || echo -e "${YELLOW}⚠️  Audio bucket may already exist${NC}"
 aws s3 mb "s3://${VIDEO_BUCKET}" --region "$REGION" 2>/dev/null || echo -e "${YELLOW}⚠️  Video bucket may already exist${NC}"
-echo -e "${GREEN}✅ S3 buckets created${NC}"
+echo -e "${GREEN}✅ S3 bucket created${NC}"
 echo ""
 
 # Step 2: Create DynamoDB table
@@ -93,7 +90,7 @@ else
       --region "$REGION" > /dev/null
 
     # Update policy with actual bucket names
-    sed "s|media-pipelines-audio-\*|${AUDIO_BUCKET}/*|g; s|media-pipelines-video-\*|${VIDEO_BUCKET}/*|g; s|media-pipelines-metadata|${METADATA_TABLE}|g; s|media-pipelines-notifications|${SNS_TOPIC_NAME}|g" \
+    sed "s|media-pipelines-video-\*|${VIDEO_BUCKET}/*|g; s|media-pipelines-metadata|${METADATA_TABLE}|g; s|media-pipelines-notifications|${SNS_TOPIC_NAME}|g" \
       scripts/lambda-policy.json > /tmp/lambda-policy-updated.json
 
     aws iam put-role-policy \
@@ -157,8 +154,8 @@ rm -rf "$COMMON_LAYER_DIR"
 COMMON_LAYER_SIZE=$(du -h layer-common.zip | cut -f1)
 echo "      ✅ Created layer-common.zip ($COMMON_LAYER_SIZE)"
 
-# Create audio layer (librosa, pydub, numpy) - only for audio_analyze
-echo "   Creating audio dependencies layer..."
+# No audio layer needed (video pipeline only)
+echo ""
 AUDIO_LAYER_DIR="layer-audio-$(date +%s)"
 mkdir -p "$AUDIO_LAYER_DIR/python"
 pip install -q pydub librosa numpy -t "$AUDIO_LAYER_DIR/python" 2>/dev/null || echo "   Warning: Audio dependencies may not be available"
@@ -176,15 +173,11 @@ mkdir -p "$DEPLOY_DIR"
 
 # Copy source code only
 cp -r shared "$DEPLOY_DIR/"
-cp -r audio_pipeline "$DEPLOY_DIR/"
 cp -r video_pipeline "$DEPLOY_DIR/"
 cp -r infrastructure "$DEPLOY_DIR/"
 
-# Create deployment packages for each Lambda
+# Create deployment packages for each Lambda (video pipeline only)
 LAMBDA_HANDLERS=(
-    "audio_ingest:infrastructure.handlers.audio_ingest.handler"
-    "audio_analyze:infrastructure.handlers.audio_analyze.handler"
-    "index_audio:infrastructure.handlers.index_audio.handler"
     "video_ingest:infrastructure.handlers.video_ingest.handler"
     "video_rekognition_start:infrastructure.handlers.video_rekognition_start.handler"
     "video_rekognition_check:infrastructure.handlers.video_rekognition_check.handler"
@@ -277,11 +270,11 @@ echo ""
 echo "🚀 Step 6: Deploying Lambda functions..."
 
 # Base environment variables for all Lambda functions (single line JSON for AWS CLI)
-ENV_VARS_BASE="{\"MEDIA_PIPELINES_AUDIO_BUCKET\":\"${AUDIO_BUCKET}\",\"MEDIA_PIPELINES_VIDEO_BUCKET\":\"${VIDEO_BUCKET}\",\"MEDIA_PIPELINES_METADATA_TABLE\":\"${METADATA_TABLE}\",\"MEDIA_PIPELINES_AWS_REGION\":\"${REGION}\"}"
+ENV_VARS_BASE="{\"MEDIA_PIPELINES_VIDEO_BUCKET\":\"${VIDEO_BUCKET}\",\"MEDIA_PIPELINES_METADATA_TABLE\":\"${METADATA_TABLE}\",\"MEDIA_PIPELINES_AWS_REGION\":\"${REGION}\"}"
 
 # Environment variables for video_ingest (includes Pixabay API key if available)
 if [ -n "${PIXABAY_API_KEY:-}" ]; then
-    ENV_VARS_VIDEO_INGEST="{\"MEDIA_PIPELINES_AUDIO_BUCKET\":\"${AUDIO_BUCKET}\",\"MEDIA_PIPELINES_VIDEO_BUCKET\":\"${VIDEO_BUCKET}\",\"MEDIA_PIPELINES_METADATA_TABLE\":\"${METADATA_TABLE}\",\"MEDIA_PIPELINES_AWS_REGION\":\"${REGION}\",\"MEDIA_PIPELINES_PIXABAY_API_KEY\":\"${PIXABAY_API_KEY}\"}"
+    ENV_VARS_VIDEO_INGEST="{\"MEDIA_PIPELINES_VIDEO_BUCKET\":\"${VIDEO_BUCKET}\",\"MEDIA_PIPELINES_METADATA_TABLE\":\"${METADATA_TABLE}\",\"MEDIA_PIPELINES_AWS_REGION\":\"${REGION}\",\"MEDIA_PIPELINES_PIXABAY_API_KEY\":\"${PIXABAY_API_KEY}\"}"
     echo "   ✅ Pixabay API key will be configured in video_ingest Lambda function"
 else
     ENV_VARS_VIDEO_INGEST="$ENV_VARS_BASE"
@@ -303,12 +296,9 @@ for handler_spec in "${LAMBDA_HANDLERS[@]}"; do
         ENV_VARS_TO_USE="$ENV_VARS_BASE"
     fi
 
-    # Determine which layers to use
-    # All functions get common layer, audio_analyze also gets audio layer
-    LAYERS_TO_USE="$COMMON_LAYER_ARN"
-    if [ "$function_name" = "audio_analyze" ] && [ -n "$AUDIO_LAYER_ARN" ]; then
-        LAYERS_TO_USE="$COMMON_LAYER_ARN $AUDIO_LAYER_ARN"
-    fi
+        # Determine which layers to use
+        # All functions get common layer
+        LAYERS_TO_USE="$COMMON_LAYER_ARN"
 
     # Check if function exists
     if aws lambda get-function --function-name "$function_name_full" --region "$REGION" &>/dev/null; then
@@ -321,11 +311,13 @@ for handler_spec in "${LAMBDA_HANDLERS[@]}"; do
         # Create temp file for environment variables
         ENV_TEMP=$(mktemp)
         echo "{\"Variables\":${ENV_VARS_TO_USE}}" > "$ENV_TEMP"
+
+        # Update configuration
         aws lambda update-function-configuration \
           --function-name "$function_name_full" \
           --timeout 300 \
           --memory-size 512 \
-          --layers $LAYERS_TO_USE \
+          --layers "$LAYERS_TO_USE" \
           --environment file://"$ENV_TEMP" \
           --region "$REGION" > /dev/null 2>&1
         rm -f "$ENV_TEMP"
@@ -336,17 +328,20 @@ for handler_spec in "${LAMBDA_HANDLERS[@]}"; do
         # Create temp file for environment variables
         ENV_TEMP=$(mktemp)
         echo "{\"Variables\":${ENV_VARS_TO_USE}}" > "$ENV_TEMP"
-        if aws lambda create-function \
-          --function-name "$function_name_full" \
+
+        CREATE_CMD="aws lambda create-function \
+          --function-name $function_name_full \
           --runtime python3.11 \
-          --role "$LAMBDA_ROLE_ARN" \
-          --handler "$handler_path" \
-          --zip-file "fileb://${zip_file}" \
+          --role $LAMBDA_ROLE_ARN \
+          --handler $handler_path \
+          --zip-file fileb://${zip_file} \
           --timeout 300 \
           --memory-size 512 \
           --layers $LAYERS_TO_USE \
-          --environment file://"$ENV_TEMP" \
-          --region "$REGION" 2>&1 | grep -q "FunctionName"; then
+          --environment file://$ENV_TEMP \
+          --region $REGION"
+
+        if eval "$CREATE_CMD" 2>&1 | grep -q "FunctionName"; then
             : # Success
         else
             echo "      ⚠️  Warning: Function creation may have failed, checking..."
@@ -372,35 +367,7 @@ echo -e "${GREEN}✅ All Lambda functions deployed${NC}"
 echo ""
 
 # Step 7: Deploy Step Functions
-echo "🔄 Step 7: Deploying Step Functions state machines..."
-
-# Audio State Machine
-echo "   Deploying Audio Pipeline State Machine..."
-AUDIO_INGEST_ARN=$(aws lambda get-function --function-name "${PROJECT_PREFIX}-audio_ingest" --region "$REGION" --query 'Configuration.FunctionArn' --output text)
-AUDIO_ANALYZE_ARN=$(aws lambda get-function --function-name "${PROJECT_PREFIX}-audio_analyze" --region "$REGION" --query 'Configuration.FunctionArn' --output text)
-AUDIO_INDEX_ARN=$(aws lambda get-function --function-name "${PROJECT_PREFIX}-index_audio" --region "$REGION" --query 'Configuration.FunctionArn' --output text)
-
-sed "s|\${IngestAudioFunctionArn}|${AUDIO_INGEST_ARN}|g; s|\${AnalyzeAudioFunctionArn}|${AUDIO_ANALYZE_ARN}|g; s|\${IndexAudioFunctionArn}|${AUDIO_INDEX_ARN}|g" \
-  infrastructure/audio_state_machine.asl.json > /tmp/audio_sm.json
-
-AUDIO_SM_NAME="${PROJECT_PREFIX}-audio-pipeline"
-AUDIO_SM_ARN_POTENTIAL="arn:aws:states:${REGION}:${ACCOUNT_ID}:stateMachine:${AUDIO_SM_NAME}"
-if aws stepfunctions describe-state-machine --state-machine-arn "$AUDIO_SM_ARN_POTENTIAL" --region "$REGION" &>/dev/null; then
-    AUDIO_SM_ARN=$(aws stepfunctions update-state-machine \
-      --state-machine-arn "$AUDIO_SM_ARN_POTENTIAL" \
-      --definition file:///tmp/audio_sm.json \
-      --region "$REGION" \
-      --query 'stateMachineArn' --output text)
-    echo "      ✅ Updated Audio Pipeline State Machine"
-else
-    AUDIO_SM_ARN=$(aws stepfunctions create-state-machine \
-      --name "$AUDIO_SM_NAME" \
-      --definition file:///tmp/audio_sm.json \
-      --role-arn "$STEPFUNCTIONS_ROLE_ARN" \
-      --region "$REGION" \
-      --query 'stateMachineArn' --output text)
-    echo "      ✅ Created Audio Pipeline State Machine"
-fi
+echo "🔄 Step 7: Deploying Step Functions state machine..."
 
 # Video State Machine
 echo "   Deploying Video Pipeline State Machine..."
@@ -435,16 +402,114 @@ fi
 echo -e "${GREEN}✅ State machines deployed${NC}"
 echo ""
 
+# Step 8: Configure EventBridge Scheduling (automatic pipeline execution)
+echo "⏰ Step 8: Configuring EventBridge scheduling..."
+
+# Default campaign
+DEFAULT_CAMPAIGN="nature"
+DEFAULT_BATCH_VIDEO=2
+
+# Create IAM role for EventBridge to trigger Step Functions
+EVENTBRIDGE_ROLE_NAME="${PROJECT_PREFIX}-eventbridge-stepfunctions-role"
+EVENTBRIDGE_ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/${EVENTBRIDGE_ROLE_NAME}"
+
+if aws iam get-role --role-name "$EVENTBRIDGE_ROLE_NAME" --region "$REGION" &>/dev/null; then
+    echo "   ✅ EventBridge role already exists"
+else
+    # Trust policy for EventBridge
+    cat > /tmp/eventbridge-trust-policy.json <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Service": "events.amazonaws.com"
+      },
+      "Action": "sts:AssumeRole"
+    }
+  ]
+}
+EOF
+
+    # Policy for EventBridge to trigger Step Functions
+    cat > /tmp/eventbridge-policy.json <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "states:StartExecution"
+      ],
+            "Resource": [
+              "${VIDEO_SM_ARN}"
+            ]
+    }
+  ]
+}
+EOF
+
+    aws iam create-role \
+      --role-name "$EVENTBRIDGE_ROLE_NAME" \
+      --assume-role-policy-document file:///tmp/eventbridge-trust-policy.json \
+      --region "$REGION" >/dev/null
+
+    aws iam put-role-policy \
+      --role-name "$EVENTBRIDGE_ROLE_NAME" \
+      --policy-name "${PROJECT_PREFIX}-eventbridge-policy" \
+      --policy-document file:///tmp/eventbridge-policy.json \
+      --region "$REGION" >/dev/null
+
+    echo "   ✅ Created EventBridge role"
+fi
+
+# Wait for role to be available
+sleep 2
+
+# Create EventBridge rule for video pipeline (weekly on Monday at 10:00 UTC)
+VIDEO_RULE_NAME="${PROJECT_PREFIX}-video-weekly"
+# Create JSON input for EventBridge target (escape quotes for AWS CLI)
+VIDEO_RULE_INPUT="{\"campaign\":\"${DEFAULT_CAMPAIGN}\",\"batch_size_video\":${DEFAULT_BATCH_VIDEO}}"
+
+if aws events describe-rule --name "$VIDEO_RULE_NAME" --region "$REGION" &>/dev/null; then
+    aws events put-rule \
+      --name "$VIDEO_RULE_NAME" \
+      --schedule-expression "cron(0 10 ? * MON *)" \
+      --state ENABLED \
+      --description "Weekly trigger for video pipeline with campaign ${DEFAULT_CAMPAIGN}" \
+      --region "$REGION" >/dev/null
+    echo "   ✅ Updated Video Pipeline schedule (weekly Monday 10:00 UTC)"
+else
+    aws events put-rule \
+      --name "$VIDEO_RULE_NAME" \
+      --schedule-expression "cron(0 10 ? * MON *)" \
+      --state ENABLED \
+      --description "Weekly trigger for video pipeline with campaign ${DEFAULT_CAMPAIGN}" \
+      --region "$REGION" >/dev/null
+    echo "   ✅ Created Video Pipeline schedule (weekly Monday 10:00 UTC)"
+fi
+
+# Add target for video pipeline
+aws events put-targets \
+  --rule "$VIDEO_RULE_NAME" \
+  --targets "Id=1,Arn=${VIDEO_SM_ARN},RoleArn=${EVENTBRIDGE_ROLE_ARN},Input=${VIDEO_RULE_INPUT}" \
+  --region "$REGION" >/dev/null 2>&1 || true
+
+echo -e "${GREEN}✅ EventBridge scheduling configured${NC}"
+echo "   Video pipeline: Weekly on Monday at 10:00 UTC (campaign: ${DEFAULT_CAMPAIGN})"
+echo ""
+
 # Save configuration to file
 CONFIG_FILE=".aws-deployment-config"
 cat > "$CONFIG_FILE" <<EOF
 # AWS Deployment Configuration
 # Generated on $(date)
-export MEDIA_PIPELINES_AUDIO_BUCKET=$AUDIO_BUCKET
+
 export MEDIA_PIPELINES_VIDEO_BUCKET=$VIDEO_BUCKET
 export MEDIA_PIPELINES_METADATA_TABLE=$METADATA_TABLE
 export MEDIA_PIPELINES_AWS_REGION=$REGION
-export MEDIA_PIPELINES_AUDIO_STATE_MACHINE_ARN=$AUDIO_SM_ARN
+
 export MEDIA_PIPELINES_VIDEO_STATE_MACHINE_ARN=$VIDEO_SM_ARN
 EOF
 
@@ -459,31 +524,26 @@ echo -e "${GREEN}✅ Deployment Complete!${NC}"
 echo "=============================================="
 echo ""
 echo "📋 Configuration Summary:"
-echo "   Audio Bucket: $AUDIO_BUCKET"
 echo "   Video Bucket: $VIDEO_BUCKET"
 echo "   Metadata Table: $METADATA_TABLE"
 echo "   Region: $REGION"
 echo ""
-echo "🔗 State Machine ARNs:"
-echo "   Audio: $AUDIO_SM_ARN"
+echo "🔗 State Machine ARN:"
 echo "   Video: $VIDEO_SM_ARN"
 echo ""
 echo "💾 Configuration saved to: $CONFIG_FILE"
 echo "   Load it with: source $CONFIG_FILE"
 echo ""
 echo "💾 Environment variables:"
-echo "export MEDIA_PIPELINES_AUDIO_BUCKET=$AUDIO_BUCKET"
 echo "export MEDIA_PIPELINES_VIDEO_BUCKET=$VIDEO_BUCKET"
 echo "export MEDIA_PIPELINES_METADATA_TABLE=$METADATA_TABLE"
 echo "export MEDIA_PIPELINES_AWS_REGION=$REGION"
-echo "export MEDIA_PIPELINES_AUDIO_STATE_MACHINE_ARN=$AUDIO_SM_ARN"
 echo "export MEDIA_PIPELINES_VIDEO_STATE_MACHINE_ARN=$VIDEO_SM_ARN"
 echo ""
-echo "🧪 Test the pipelines:"
+echo "🧪 Test the pipeline:"
 echo "   source $CONFIG_FILE"
 echo "   python scripts/test_aws_deployment.py"
 echo ""
 echo "   Or manually trigger:"
-echo "   python infrastructure/schedule_trigger.py audio nature 1"
 echo "   python infrastructure/schedule_trigger.py video nature 1"
 echo ""

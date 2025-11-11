@@ -276,11 +276,35 @@ def _ingest_from_source(
 
         metadata_list = []
 
+        # Check existing videos to avoid duplicates
+        from shared.index import query_processed_media
+
+        existing_videos = query_processed_media(
+            media_type="video",
+            campaign=campaign,
+            aws_config=aws_config,
+        )
+        existing_source_ids = {
+            record.metadata.get("source_id", "")
+            for record in existing_videos
+            if record.metadata.get("source") == source_name
+        }
+
         for video in results:
             video_url = video["url"]
             video_title = video.get("title", "untitled")
             video_source = video.get("source", source_name)
             source_id = video.get("source_id")
+
+            # Skip if video already processed
+            if source_id and source_id in existing_source_ids:
+                LOGGER.info(
+                    "Skipping duplicate video from %s: %s (source_id: %s)",
+                    video_source,
+                    video_title,
+                    source_id,
+                )
+                continue
 
             LOGGER.info("Downloading video from %s: %s", video_source, video_title)
 

@@ -24,7 +24,6 @@ def aws_config():
     """Test AWS configuration."""
     return AwsConfig(
         region="us-east-1",
-        audio_bucket="test-audio-bucket",
         video_bucket="test-video-bucket",
         metadata_table="test-metadata-table",
     )

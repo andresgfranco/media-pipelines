@@ -16,7 +16,6 @@ from shared.config import AwsConfig
 def test_build_aws_resources_creates_clients_with_config():
     aws_config = AwsConfig(
         region="us-east-1",
-        audio_bucket="audio-bucket",
         video_bucket="video-bucket",
         metadata_table="metadata-table",
     )

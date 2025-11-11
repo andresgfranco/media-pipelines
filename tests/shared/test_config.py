@@ -20,7 +20,6 @@ def test_load_config_from_env_reads_prefixed_env_vars():
     env = {
         f"{ENV_PREFIX}ENVIRONMENT": "staging",
         f"{ENV_PREFIX}AWS_REGION": "us-west-2",
-        f"{ENV_PREFIX}AUDIO_BUCKET": "audio-bucket",
         f"{ENV_PREFIX}VIDEO_BUCKET": "video-bucket",
         f"{ENV_PREFIX}METADATA_TABLE": "media-table",
         f"{ENV_PREFIX}STEP_FUNCTIONS_ROLE_ARN": "arn:aws:iam::123:role/step-functions",
@@ -32,7 +31,6 @@ def test_load_config_from_env_reads_prefixed_env_vars():
     assert config.environment == "staging"
     assert isinstance(config.aws, AwsConfig)
     assert config.aws.region == "us-west-2"
-    assert config.aws.audio_bucket == "audio-bucket"
     assert config.aws.video_bucket == "video-bucket"
     assert config.aws.metadata_table == "media-table"
     assert config.aws.step_functions_role_arn == "arn:aws:iam::123:role/step-functions"
@@ -40,7 +38,6 @@ def test_load_config_from_env_reads_prefixed_env_vars():
 
 def test_load_config_uses_defaults_and_raises_for_missing_values():
     env = {
-        f"{ENV_PREFIX}AUDIO_BUCKET": "audio-bucket",
         f"{ENV_PREFIX}VIDEO_BUCKET": "video-bucket",
         f"{ENV_PREFIX}METADATA_TABLE": "media-table",
     }
@@ -56,13 +53,11 @@ def test_load_config_uses_defaults_and_raises_for_missing_values():
 
 def test_config_cache_round_trip(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv(f"{ENV_PREFIX}ENVIRONMENT", raising=False)
-    monkeypatch.delenv(f"{ENV_PREFIX}AUDIO_BUCKET", raising=False)
     monkeypatch.delenv(f"{ENV_PREFIX}VIDEO_BUCKET", raising=False)
     monkeypatch.delenv(f"{ENV_PREFIX}METADATA_TABLE", raising=False)
 
     set_runtime_config(
         environment="local",
-        audio_bucket="audio-test",
         video_bucket="video-test",
         metadata_table="metadata-test",
         region="us-west-1",
@@ -70,13 +65,12 @@ def test_config_cache_round_trip(monkeypatch: pytest.MonkeyPatch):
 
     config = get_runtime_config()
     assert config.environment == "local"
-    assert config.aws.audio_bucket == "audio-test"
+    assert config.aws.video_bucket == "video-test"
     assert config.aws.metadata_table == "metadata-test"
 
     # Overwrite values and confirm cache resets.
     set_runtime_config(
         environment="dev",
-        audio_bucket="audio-next",
         video_bucket="video-next",
         metadata_table="metadata-next",
         region="eu-west-1",
@@ -89,7 +83,6 @@ def test_config_cache_round_trip(monkeypatch: pytest.MonkeyPatch):
     for key in (
         "ENVIRONMENT",
         "AWS_REGION",
-        "AUDIO_BUCKET",
         "VIDEO_BUCKET",
         "METADATA_TABLE",
         "STEP_FUNCTIONS_ROLE_ARN",

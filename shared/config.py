@@ -17,7 +17,6 @@ class AwsConfig:
     """AWS-related configuration values."""
 
     region: str
-    audio_bucket: str
     video_bucket: str
     metadata_table: str
     step_functions_role_arn: str | None = None
@@ -66,7 +65,6 @@ def load_config_from_env(
 
     aws_config = AwsConfig(
         region=resolve("AWS_REGION", default="us-east-1"),
-        audio_bucket=resolve("AUDIO_BUCKET"),
         video_bucket=resolve("VIDEO_BUCKET"),
         metadata_table=resolve("METADATA_TABLE"),
         step_functions_role_arn=env_mapping.get(f"{prefix}STEP_FUNCTIONS_ROLE_ARN"),
@@ -92,7 +90,6 @@ def get_runtime_config(
 def set_runtime_config(
     *,
     environment: str,
-    audio_bucket: str,
     video_bucket: str,
     metadata_table: str,
     region: str = "us-east-1",
@@ -110,7 +107,6 @@ def set_runtime_config(
 
     target_env[f"{prefix}ENVIRONMENT"] = environment
     target_env[f"{prefix}AWS_REGION"] = region
-    target_env[f"{prefix}AUDIO_BUCKET"] = audio_bucket
     target_env[f"{prefix}VIDEO_BUCKET"] = video_bucket
     target_env[f"{prefix}METADATA_TABLE"] = metadata_table
 

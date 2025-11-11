@@ -14,7 +14,6 @@ def aws_config():
     """Test AWS configuration."""
     return AwsConfig(
         region="us-east-1",
-        audio_bucket="test-audio-bucket",
         video_bucket="test-video-bucket",
         metadata_table="test-metadata-table",
     )
@@ -25,7 +24,6 @@ def setup_config(aws_config):
     """Set up runtime configuration for tests."""
     set_runtime_config(
         environment="test",
-        audio_bucket=aws_config.audio_bucket,
         video_bucket=aws_config.video_bucket,
         metadata_table=aws_config.metadata_table,
         region=aws_config.region,
