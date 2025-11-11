@@ -127,6 +127,7 @@ def build_aws_resources(
         "s3": session_factory.client("s3", config=boto_cfg),
         "dynamodb": session_factory.client("dynamodb", config=boto_cfg),
         "stepfunctions": session_factory.client("stepfunctions", config=boto_cfg),
+        "rekognition": session_factory.client("rekognition", config=boto_cfg),
     }
     return clients
 

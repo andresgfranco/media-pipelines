@@ -1,0 +1,134 @@
+{
+  "Comment": "Video pipeline workflow: ingest videos, run Rekognition, and finalize results",
+  "StartAt": "IngestVideo",
+  "States": {
+    "IngestVideo": {
+      "Type": "Task",
+      "Resource": "${IngestVideoFunctionArn}",
+      "Next": "StartRekognitionJobs",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "IngestFailed",
+          "ResultPath": "$.error"
+        }
+      ]
+    },
+    "StartRekognitionJobs": {
+      "Type": "Task",
+      "Resource": "${StartRekognitionFunctionArn}",
+      "InputPath": "$",
+      "ResultPath": "$.rekognition",
+      "Next": "ProcessRekognitionJobs",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "RekognitionStartFailed",
+          "ResultPath": "$.error"
+        }
+      ]
+    },
+    "ProcessRekognitionJobs": {
+      "Type": "Map",
+      "ItemsPath": "$.rekognition.jobs",
+      "MaxConcurrency": 5,
+      "Iterator": {
+        "StartAt": "WaitForJob",
+        "States": {
+          "WaitForJob": {
+            "Type": "Wait",
+            "Seconds": 30,
+            "Next": "CheckJobStatus"
+          },
+          "CheckJobStatus": {
+            "Type": "Task",
+            "Resource": "${CheckRekognitionStatusFunctionArn}",
+            "InputPath": "$",
+            "ResultPath": "$.status",
+            "Next": "JobComplete?"
+          },
+          "JobComplete?": {
+            "Type": "Choice",
+            "Choices": [
+              {
+                "Variable": "$.status.JobStatus",
+                "StringEquals": "SUCCEEDED",
+                "Next": "JobSucceeded"
+              },
+              {
+                "Variable": "$.status.JobStatus",
+                "StringEquals": "FAILED",
+                "Next": "JobFailed"
+              }
+            ],
+            "Default": "WaitForJob"
+          },
+          "JobSucceeded": {
+            "Type": "Pass",
+            "End": true
+          },
+          "JobFailed": {
+            "Type": "Fail",
+            "Error": "RekognitionJobFailed",
+            "Cause": "Rekognition job failed"
+          }
+        }
+      },
+      "Next": "FinalizeResults",
+      "ResultPath": "$.completed_jobs"
+    },
+    "FinalizeResults": {
+      "Type": "Task",
+      "Resource": "${FinalizeRekognitionFunctionArn}",
+      "InputPath": "$",
+      "ResultPath": "$.finalization",
+      "End": true,
+      "Retry": [
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "FinalizationFailed",
+          "ResultPath": "$.error"
+        }
+      ]
+    },
+    "IngestFailed": {
+      "Type": "Fail",
+      "Error": "IngestFailed",
+      "Cause": "Video ingestion step failed"
+    },
+    "RekognitionStartFailed": {
+      "Type": "Fail",
+      "Error": "RekognitionStartFailed",
+      "Cause": "Rekognition job start step failed"
+    },
+    "FinalizationFailed": {
+      "Type": "Fail",
+      "Error": "FinalizationFailed",
+      "Cause": "Rekognition finalization step failed"
+    }
+  }
+}
