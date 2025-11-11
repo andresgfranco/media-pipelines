@@ -1,0 +1,58 @@
+{
+  "Comment": "Audio pipeline workflow: ingest and analyze Creative Commons audio files",
+  "StartAt": "IngestAudio",
+  "States": {
+    "IngestAudio": {
+      "Type": "Task",
+      "Resource": "${IngestAudioFunctionArn}",
+      "Next": "AnalyzeAudio",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "IngestFailed",
+          "ResultPath": "$.error"
+        }
+      ]
+    },
+    "AnalyzeAudio": {
+      "Type": "Task",
+      "Resource": "${AnalyzeAudioFunctionArn}",
+      "InputPath": "$",
+      "ResultPath": "$.analysis",
+      "End": true,
+      "Retry": [
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "AnalysisFailed",
+          "ResultPath": "$.error"
+        }
+      ]
+    },
+    "IngestFailed": {
+      "Type": "Fail",
+      "Error": "IngestFailed",
+      "Cause": "Audio ingestion step failed"
+    },
+    "AnalysisFailed": {
+      "Type": "Fail",
+      "Error": "AnalysisFailed",
+      "Cause": "Audio analysis step failed"
+    }
+  }
+}

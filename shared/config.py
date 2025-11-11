@@ -58,7 +58,7 @@ def load_config_from_env(
 ) -> RuntimeConfig:
     """Load configuration from a mapping (defaults to the OS environment)."""
 
-    env_mapping: Mapping[str, str] = env or os.environ
+    env_mapping: Mapping[str, str] = os.environ if env is None else env
 
     def resolve(name: str, *, default: str | None = None) -> str:
         raw_key = f"{prefix}{name}"
