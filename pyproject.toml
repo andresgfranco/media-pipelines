@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "media-pipelines"
 version = "0.1.0"
-description = "Automated audio and video media enrichment pipelines."
+description = "Automated video media enrichment pipeline."
 authors = [{ name = "Andres Gonzalez Franco" }]
 readme = "README.md"
 requires-python = ">=3.11"
@@ -26,17 +26,12 @@ dev = [
     "types-requests>=2.31.0",
     "pre-commit>=3.0.0",
 ]
-audio = [
-    "pydub>=0.25.1",
-    "librosa>=0.10.1",
-]
 dashboard = [
     "streamlit>=1.37.0",
 ]
 
 [tool.setuptools]
 packages = [
-    "audio_pipeline",
     "video_pipeline",
     "shared",
     "infrastructure",

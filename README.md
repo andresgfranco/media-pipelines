@@ -1,11 +1,10 @@
 ## 🚀 Media Pipelines Demo
 
 ### 🎯 What is this about?
-A single-day sprint that wires up two practical media pipelines on AWS:
-- **Audio pipeline** curates Creative Commons music and sound effects, enriches them with metadata, and keeps the catalog tidy.
+A single-day sprint that wires up a practical video pipeline on AWS:
 - **Video pipeline** pulls Creative Commons clips and runs computer vision so each file comes with scene-level labels ready for an editor or automation agent.
 
-Both pipelines run on a schedule, and a tiny Streamlit dashboard lets anyone fire them manually, tweak parameters, and inspect what landed in the data lake.
+The pipeline runs on a schedule, and a tiny Streamlit dashboard lets anyone fire it manually, tweak parameters, and inspect what landed in the data lake.
 
 ---
 
@@ -18,7 +17,6 @@ Both pipelines run on a schedule, and a tiny Streamlit dashboard lets anyone fir
 - **Notifications**: optional Amazon SNS
 
 **External sources**
-- 🎵 Internet Archive API for Creative Commons audio
 - 🎬 Wikimedia Commons API and Pixabay API for Creative Commons video
 
 APIs were selected because they ship legal, attribution-friendly assets without manual uploads, keeping the MVP realistic and fast to deliver.
@@ -28,27 +26,8 @@ APIs were selected because they ship legal, attribution-friendly assets without 
 ### 🔄 Campaigns and triggers
 - **Campaigns**: a curated list of themes (e.g. `travel`, `tech`, `nature`) stored in S3 or Parameter Store so we always get results; documentation explains how to swap in automatic trend feeds later.
 - **Triggers**:
-  - Automatic (EventBridge cron) reads the active campaign and batch sizes, then kicks off both pipelines.
-  - Manual (Streamlit dashboard) lets you change the campaign, adjust batch sizes (defaults 5 audio, 2 video), and run the pipelines instantly. The chosen campaign persists so the next scheduled run uses it too.
-
----
-
-### 🎧 Audio pipeline (Creative Commons curation)
-1. **Ingest Lambda**
-   - Reads campaign plus `batch_size_audio`.
-   - Queries Internet Archive with keyword and Creative Commons filters.
-   - Downloads clips to `s3://media-raw/audio/<campaign>/<timestamp>/`.
-   - Stores source metadata (title, author, license, URL).
-
-2. **Analysis Lambda**
-   - Uses `pydub` or `librosa` for duration, RMS loudness, and a simple voice-vs-instrumental flag.
-   - Flags whether attribution is required.
-   - Writes JSON summaries to `media-processed/audio/<campaign>/<timestamp>/summary.json`.
-
-3. **Monitoring**
-   - Streamlit lists latest runs, counts assets per campaign, and links to raw/processed files.
-
-Batch sizes are intentionally small for the MVP so everything finishes quickly; the same design scales to much larger batches as soon as we raise the limits.
+  - Automatic (EventBridge cron) reads the active campaign and batch sizes, then kicks off the pipeline.
+  - Manual (Streamlit dashboard) lets you change the campaign, adjust batch sizes (default 2 video), and run the pipeline instantly. The chosen campaign persists so the next scheduled run uses it too.
 
 ---
 
@@ -75,8 +54,8 @@ Batch sizes are intentionally small for the MVP so everything finishes quickly; 
 
 ### 📊 Streamlit dashboard
 - Campaign dropdown (persists to S3 or Parameter Store)
-- Sliders for audio/video batch sizes
-- Buttons for manual runs
+- Slider for video batch size
+- Button for manual runs
 - Table of recent executions (status, campaign, batch size, timestamps)
 - Counters of raw vs processed assets per campaign
 - Peek into the latest JSON summaries
@@ -123,11 +102,11 @@ Streamlit Community Cloud is the fastest way to share it; App Runner or Fargate 
 
 ---
 
-### 🔭 What’s next after the MVP?
+### 🔭 What's next after the MVP?
 - Automate campaign rotation via Pytrends or another trends provider.
 - Parallelize ingestion with Step Functions Map states for high-volume runs.
 - Persist metadata in DynamoDB or OpenSearch and expose APIs to downstream services.
-- Add richer audio features (BPM, key) and deeper CV (OpenCV shot detection).
+- Add deeper CV features (OpenCV shot detection, scene transitions).
 - Extend computer vision to tag aesthetic and production cues (editing style, acting style, lighting treatment, scenography, wardrobe, etc.).
 - Build fuller observability (CloudWatch dashboards, alarms, Slack alerts).
 - Expand automated test coverage: integration tests with LocalStack, end-to-end regression runs triggered in CI.

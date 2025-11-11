@@ -33,7 +33,7 @@ def test_send_pipeline_notification_success(mock_sns_client, aws_config):
     """Test successful pipeline notification."""
     result = send_pipeline_notification(
         topic_arn="arn:aws:sns:us-east-1:123456789012:test-topic",
-        pipeline_type="audio",
+        pipeline_type="video",
         campaign="nature",
         status="SUCCEEDED",
         execution_arn="arn:aws:states:us-east-1:123456789012:execution:test",

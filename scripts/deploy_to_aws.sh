@@ -156,15 +156,6 @@ echo "      ✅ Created layer-common.zip ($COMMON_LAYER_SIZE)"
 
 # No audio layer needed (video pipeline only)
 echo ""
-AUDIO_LAYER_DIR="layer-audio-$(date +%s)"
-mkdir -p "$AUDIO_LAYER_DIR/python"
-pip install -q pydub librosa numpy -t "$AUDIO_LAYER_DIR/python" 2>/dev/null || echo "   Warning: Audio dependencies may not be available"
-cd "$AUDIO_LAYER_DIR"
-zip -q -r "../layer-audio.zip" . -x "*.pyc" "__pycache__/*" "*.dist-info/*"
-cd ..
-rm -rf "$AUDIO_LAYER_DIR"
-AUDIO_LAYER_SIZE=$(du -h layer-audio.zip 2>/dev/null | cut -f1 || echo "N/A")
-echo "      ✅ Created layer-audio.zip ($AUDIO_LAYER_SIZE)"
 
 # Package Lambda functions (source code only, no dependencies)
 echo "   Packaging Lambda functions (source code only)..."
@@ -220,50 +211,7 @@ else
     echo "   ✅ Created common layer: $COMMON_LAYER_ARN"
 fi
 
-# Deploy audio layer (if it exists)
-# Note: Audio layer is large (>50MB), so we upload to S3 first if needed
-AUDIO_LAYER_NAME="${PROJECT_PREFIX}-audio-dependencies"
-AUDIO_LAYER_ARN=""
-if [ -f "layer-audio.zip" ] && [ -s "layer-audio.zip" ]; then
-    AUDIO_LAYER_SIZE=$(stat -f%z "layer-audio.zip" 2>/dev/null || stat -c%s "layer-audio.zip" 2>/dev/null || echo "0")
-    AUDIO_LAYER_SIZE_MB=$((AUDIO_LAYER_SIZE / 1024 / 1024))
-
-    if aws lambda get-layer-version --layer-name "$AUDIO_LAYER_NAME" --version-number 1 --region "$REGION" &>/dev/null; then
-        AUDIO_LAYER_ARN=$(aws lambda get-layer-version --layer-name "$AUDIO_LAYER_NAME" --version-number 1 --region "$REGION" --query 'LayerVersionArn' --output text)
-        echo "   ✅ Audio layer already exists: $AUDIO_LAYER_ARN"
-    else
-        # If layer is >50MB, upload to S3 first
-        if [ "$AUDIO_LAYER_SIZE_MB" -gt 50 ]; then
-            echo "   📤 Audio layer is large (${AUDIO_LAYER_SIZE_MB}MB), uploading to S3 first..."
-            LAYER_S3_KEY="lambda-layers/${AUDIO_LAYER_NAME}.zip"
-            aws s3 cp "layer-audio.zip" "s3://${VIDEO_BUCKET}/${LAYER_S3_KEY}" --region "$REGION" > /dev/null
-            LAYER_S3_URI="s3://${VIDEO_BUCKET}/${LAYER_S3_KEY}"
-
-            AUDIO_LAYER_ARN=$(aws lambda publish-layer-version \
-              --layer-name "$AUDIO_LAYER_NAME" \
-              --content S3Bucket="${VIDEO_BUCKET}",S3Key="${LAYER_S3_KEY}" \
-              --compatible-runtimes python3.11 \
-              --region "$REGION" \
-              --query 'LayerVersionArn' --output text 2>/dev/null || echo "")
-        else
-            AUDIO_LAYER_ARN=$(aws lambda publish-layer-version \
-              --layer-name "$AUDIO_LAYER_NAME" \
-              --zip-file "fileb://layer-audio.zip" \
-              --compatible-runtimes python3.11 \
-              --region "$REGION" \
-              --query 'LayerVersionArn' --output text 2>/dev/null || echo "")
-        fi
-
-        if [ -n "$AUDIO_LAYER_ARN" ]; then
-            echo "   ✅ Created audio layer: $AUDIO_LAYER_ARN"
-        else
-            echo "   ⚠️  Audio layer creation failed"
-        fi
-    fi
-else
-    echo "   ⚠️  Audio layer not created (dependencies not available)"
-fi
-
+# No audio layer needed (video pipeline only)
 echo ""
 
 # Step 6: Deploy Lambda functions

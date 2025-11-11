@@ -9,8 +9,6 @@
         "s3:ListBucket"
       ],
       "Resource": [
-        "arn:aws:s3:::media-pipelines-audio-*",
-        "arn:aws:s3:::media-pipelines-audio-*/*",
         "arn:aws:s3:::media-pipelines-video-*",
         "arn:aws:s3:::media-pipelines-video-*/*"
       ]
