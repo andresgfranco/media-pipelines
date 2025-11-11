@@ -65,3 +65,5 @@ target-version = ["py311"]
 [tool.pytest.ini_options]
 addopts = "-q"
 python_files = "test_*.py"
+testpaths = ["tests"]
+norecursedirs = ["scripts", "deploy", ".venv", "venv", "__pycache__"]

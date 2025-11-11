@@ -174,9 +174,11 @@ with st.sidebar:
     selected_campaign = st.selectbox(
         "Campaign",
         campaigns,
-        index=campaigns.index(st.session_state.campaign)
-        if st.session_state.campaign in campaigns
-        else 0,
+        index=(
+            campaigns.index(st.session_state.campaign)
+            if st.session_state.campaign in campaigns
+            else 0
+        ),
     )
     st.session_state.campaign = selected_campaign
 

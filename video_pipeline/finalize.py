@@ -47,9 +47,9 @@ def normalize_rekognition_labels(
         label = VideoLabel(
             name=label_data.get("Label", {}).get("Name", ""),
             confidence=label_data.get("Label", {}).get("Confidence", 0.0),
-            timestamp=label_data.get("Timestamp", 0) / 1000.0
-            if label_data.get("Timestamp")
-            else None,
+            timestamp=(
+                label_data.get("Timestamp", 0) / 1000.0 if label_data.get("Timestamp") else None
+            ),
             instances=label_data.get("Label", {}).get("Instances", []),
         )
         labels.append(label)
