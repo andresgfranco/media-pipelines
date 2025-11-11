@@ -19,7 +19,7 @@ Both pipelines run on a schedule, and a tiny Streamlit dashboard lets anyone fir
 
 **External sources**
 - 🎵 Internet Archive API for Creative Commons audio
-- 🎬 Wikimedia Commons API for Creative Commons video (ready to add Pexels or Pixabay if needed)
+- 🎬 Wikimedia Commons API and Pixabay API for Creative Commons video
 
 APIs were selected because they ship legal, attribution-friendly assets without manual uploads, keeping the MVP realistic and fast to deliver.
 
@@ -86,13 +86,20 @@ Streamlit Community Cloud is the fastest way to share it; App Runner or Fargate 
 ---
 
 ### 🪣 Data lake view
-- Folder pattern:
+- Folder pattern (following data engineering best practices - sources separated):
   ```
-  media-raw/<type>/<campaign>/<YYYYMMDD>/<filename>
-  media-processed/<type>/<campaign>/<YYYYMMDD>/<summary>.json
+  media-raw/<type>/<source>/<campaign>/<YYYYMMDD>/<filename>
+  media-processed/<type>/<source>/<campaign>/<YYYYMMDD>/<summary>.json
   ```
+  Example:
+  ```
+  media-raw/video/wikimedia/nature/20240115_120000/video1.mp4
+  media-raw/video/pixabay/nature/20240115_120000/video2.mp4
+  media-processed/video/wikimedia/nature/20240115_120000/video1_labels.json
+  media-processed/video/pixabay/nature/20240115_120000/video2_labels.json
+  ```
+- Sources are kept separated for better traceability, compliance, and independent analysis.
 - Lightweight index file or DynamoDB table captures every processed artifact so the dashboard can show history and totals.
-- Optional notebook or CLI script aggregates stats like “top 10 labels across campaigns.”
 
 ---
 
@@ -104,83 +111,7 @@ Streamlit Community Cloud is the fastest way to share it; App Runner or Fargate 
 
 ### 🔍 Code Quality & Linting
 - **Ruff**: Fast Python linter and formatter (configured in `pyproject.toml`).
-- **Pre-commit hooks**: Automatically run linting, formatting, and tests before every commit. Install with `pip install -e '.[dev]' && pre-commit install`.
-
----
-
-### 🚀 Getting Started
-
-#### Prerequisites
-- Python 3.11+ (or 3.10+ for local development)
-- AWS account with appropriate permissions (S3, Lambda, Step Functions, DynamoDB, Rekognition, EventBridge, SNS)
-- AWS credentials configured (`~/.aws/credentials` or environment variables)
-
-#### Installation
-
-```bash
-# Clone the repository
-git clone https://github.com/andresgfranco/media-pipelines.git
-cd media-pipelines
-
-# Create virtual environment
-python -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-
-# Install dependencies
-pip install -e '.[dev,audio]'
-
-# Install pre-commit hooks
-pre-commit install
-```
-
-#### Configuration
-
-Set environment variables or create a `.env` file:
-
-```bash
-export MEDIA_PIPELINES_AUDIO_BUCKET=your-audio-bucket
-export MEDIA_PIPELINES_VIDEO_BUCKET=your-video-bucket
-export MEDIA_PIPELINES_METADATA_TABLE=your-metadata-table
-export MEDIA_PIPELINES_AWS_REGION=us-east-1
-export AWS_ACCESS_KEY_ID=your-access-key
-export AWS_SECRET_ACCESS_KEY=your-secret-key
-```
-
-#### Running Tests
-
-```bash
-# Run all tests
-pytest
-
-# Run smoke tests
-pytest tests/smoke_test.py -v
-
-# Run with coverage
-pytest --cov=shared --cov=audio_pipeline --cov=video_pipeline
-```
-
-#### Running the Dashboard Locally
-
-```bash
-streamlit run dashboard/app.py
-```
-
-See [docs/streamlit-deploy.md](docs/streamlit-deploy.md) for Streamlit Cloud deployment instructions.
-
-#### Triggering Pipelines Manually
-
-```bash
-# Trigger audio pipeline
-python infrastructure/schedule_trigger.py audio nature 5
-
-# Trigger video pipeline
-python infrastructure/schedule_trigger.py video nature 2
-
-# Trigger both
-python infrastructure/schedule_trigger.py both nature 5
-```
-
-See [docs/scheduling.md](docs/scheduling.md) for EventBridge scheduling configuration.
+- **Pre-commit hooks**: Automatically run linting, formatting, and tests before every commit.
 
 ---
 

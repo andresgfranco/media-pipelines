@@ -14,8 +14,12 @@ LOGGER.setLevel(logging.INFO)
 def handler(event: dict, context: object) -> dict:
     """Lambda handler for finalizing Rekognition results."""
     try:
-        # Extract parameters from event (from wait step)
-        jobs = event.get("jobs", [])
+        # Extract parameters from event
+        # The Map state processes jobs and stores results in $.completed_jobs
+        # But we need the original job data (job_id, video_s3_key) which is in $.rekognition.jobs
+        # We'll use the original jobs list since it's still available in the state
+        rekognition_data = event.get("rekognition", {})
+        jobs = rekognition_data.get("jobs", [])
 
         if not jobs:
             LOGGER.warning("No jobs provided for finalization")
@@ -49,11 +53,15 @@ def handler(event: dict, context: object) -> dict:
                 )
 
                 # Save to processed bucket
+                # Maintain source separation in processed path (data engineering best practice)
+                # Path structure: media-processed/video/{source}/{campaign}/{timestamp}/...
                 processed_key = (
                     video_s3_key.replace("media-raw", "media-processed")
                     .replace(".mp4", "_labels.json")
                     .replace(".webm", "_labels.json")
                 )
+                # Ensure source is preserved in processed path
+                # If s3_key is media-raw/video/{source}/..., processed should be media-processed/video/{source}/...
 
                 save_analysis_to_s3(
                     analysis=analysis,

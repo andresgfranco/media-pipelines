@@ -52,20 +52,24 @@ def setup_config(aws_config):
 @patch("infrastructure.handlers.video_ingest.ingest_video_batch")
 def test_video_ingest_handler_success(mock_ingest, aws_config):
     """Test successful video ingestion handler."""
-    mock_metadata = [
-        MagicMock(
-            wikimedia_title="File:Test_Video.mp4",
-            file_url="https://example.com/video.mp4",
-            license="CC-BY-4.0",
-            author="testuser",
-            description="Test video",
-            duration=10.5,
-            file_size=1024000,
-            s3_key="media-raw/video/nature/20240101_120000/Test_Video.mp4",
-            ingested_at="20240101_120000",
-        )
-    ]
-    mock_ingest.return_value = mock_metadata
+    # Mock returns dict separated by source (data engineering best practice)
+    mock_metadata_wikimedia = MagicMock(
+        source="wikimedia",
+        title="File:Test_Video.mp4",
+        source_id="File:Test_Video.mp4",
+        file_url="https://example.com/video.mp4",
+        license="CC-BY-4.0",
+        author="testuser",
+        description="Test video",
+        duration=10.5,
+        file_size=1024000,
+        s3_key="media-raw/video/wikimedia/nature/20240101_120000/Test_Video.mp4",
+        ingested_at="20240101_120000",
+    )
+    mock_ingest.return_value = {
+        "wikimedia": [mock_metadata_wikimedia],
+        "pixabay": [],  # Empty for this test
+    }
 
     event = {
         "campaign": "nature",
@@ -77,8 +81,12 @@ def test_video_ingest_handler_success(mock_ingest, aws_config):
     assert result["campaign"] == "nature"
     assert result["batch_size"] == 2
     assert result["ingested_count"] == 1
+    assert result["source_counts"] == {"wikimedia": 1, "pixabay": 0}
+    assert "metadata_by_source" in result
+    assert result["metadata_by_source"]["wikimedia"] is not None
     assert len(result["metadata"]) == 1
-    assert result["metadata"][0]["wikimedia_title"] == "File:Test_Video.mp4"
+    assert result["metadata"][0]["title"] == "File:Test_Video.mp4"
+    assert result["metadata"][0]["source"] == "wikimedia"
 
 
 @mock_aws
@@ -157,12 +165,14 @@ def test_rekognition_finalize_handler_success(mock_save, mock_finalize, aws_conf
 
     event = {
         "campaign": "nature",
-        "jobs": [
-            {
-                "job_id": "test-job-123",
-                "video_s3_key": "media-raw/video/nature/20240101_120000/Test_Video.mp4",
-            }
-        ],
+        "rekognition": {
+            "jobs": [
+                {
+                    "job_id": "test-job-123",
+                    "video_s3_key": "media-raw/video/nature/20240101_120000/Test_Video.mp4",
+                }
+            ],
+        },
     }
 
     result = finalize_handler(event, MagicMock())

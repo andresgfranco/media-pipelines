@@ -34,3 +34,8 @@ coverage.xml
 # AWS credentials
 .aws/
 *.pem
+.aws-deployment-config
+
+# Lambda deployment packages
+lambda-*.zip
+deploy-lambda-*/

@@ -1,11 +1,12 @@
-"""Video ingestion from Wikimedia Commons API."""
+"""Video ingestion from multiple sources (Wikimedia Commons, Pixabay)."""
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from enum import Enum
+from typing import Any, Protocol
 
 import requests
 from botocore.client import BaseClient
@@ -16,6 +17,7 @@ from shared.config import AwsConfig, get_runtime_config
 LOGGER = logging.getLogger(__name__)
 
 WIKIMEDIA_API_BASE = "https://commons.wikimedia.org/w/api.php"
+PIXABAY_API_BASE = "https://pixabay.com/api/videos/"
 CC_LICENSE_CATEGORIES = [
     "Category:CC-BY-4.0",
     "Category:CC-BY-SA-4.0",
@@ -23,11 +25,19 @@ CC_LICENSE_CATEGORIES = [
 ]
 
 
+class VideoSource(str, Enum):
+    """Video source provider."""
+
+    WIKIMEDIA = "wikimedia"
+    PIXABAY = "pixabay"
+
+
 @dataclass(frozen=True, slots=True)
 class VideoMetadata:
     """Metadata for an ingested video file."""
 
-    wikimedia_title: str
+    source: str  # "wikimedia" or "pixabay"
+    title: str
     file_url: str
     license: str
     author: str
@@ -36,6 +46,20 @@ class VideoMetadata:
     file_size: int
     s3_key: str
     ingested_at: str
+    # Source-specific fields
+    source_id: str | None = None  # e.g., Pixabay video ID or Wikimedia title
+
+
+class VideoSourceClient(Protocol):
+    """Protocol for video source clients."""
+
+    def search_videos(self, query: str, *, limit: int = 5) -> list[dict[str, Any]]:
+        """Search for Creative Commons video files."""
+        ...
+
+    def download_video(self, url: str) -> bytes:
+        """Download video file from URL."""
+        ...
 
 
 class WikimediaCommonsClient:
@@ -92,6 +116,8 @@ class WikimediaCommonsClient:
                     extmetadata = imageinfo.get("extmetadata", {})
                     results.append(
                         {
+                            "source": "wikimedia",
+                            "source_id": page_data.get("title", ""),
                             "title": page_data.get("title", ""),
                             "url": imageinfo.get("url", ""),
                             "size": imageinfo.get("size", 0),
@@ -111,14 +137,270 @@ class WikimediaCommonsClient:
         return response.content
 
 
+class PixabayClient:
+    """Client for Pixabay API."""
+
+    def __init__(self, api_key: str) -> None:
+        self.api_key = api_key
+        self.session = requests.Session()
+        self.session.headers.update(
+            {"User-Agent": "MediaPipelines/1.0 (https://github.com/andresgfranco/media-pipelines)"}
+        )
+
+    def search_videos(
+        self,
+        query: str,
+        *,
+        limit: int = 5,
+    ) -> list[dict[str, Any]]:
+        """Search for Creative Commons video files on Pixabay."""
+        params = {
+            "key": self.api_key,
+            "q": query,
+            "video_type": "all",  # "all", "film", "animation"
+            "category": "all",  # "all", "backgrounds", "fashion", "nature", etc.
+            "min_width": 640,  # Minimum video width
+            "safesearch": "true",
+            "per_page": max(min(limit, 20), 3),  # Pixabay requires min 3, max 20 per page
+            "order": "popular",  # "popular", "latest"
+        }
+
+        response = self.session.get(PIXABAY_API_BASE, params=params, timeout=30)
+        response.raise_for_status()
+        data = response.json()
+
+        if "hits" not in data:
+            return []
+
+        results = []
+        for hit in data.get("hits", [])[:limit]:
+            # Pixabay videos have multiple formats, prefer medium quality
+            video_info = hit.get("videos", {})
+            video_url = None
+            video_size = 0
+            mime_type = "video/mp4"
+
+            # Prefer medium quality, fallback to small or large
+            if "medium" in video_info:
+                video_url = video_info["medium"].get("url", "")
+                video_size = video_info["medium"].get("size", 0)
+            elif "small" in video_info:
+                video_url = video_info["small"].get("url", "")
+                video_size = video_info["small"].get("size", 0)
+            elif "large" in video_info:
+                video_url = video_info["large"].get("url", "")
+                video_size = video_info["large"].get("size", 0)
+
+            if not video_url:
+                continue
+
+            # Pixabay videos are free to use (Pixabay License, similar to CC0)
+            results.append(
+                {
+                    "source": "pixabay",
+                    "source_id": str(hit.get("id", "")),
+                    "title": hit.get("tags", query),
+                    "url": video_url,
+                    "size": video_size,
+                    "mime": mime_type,
+                    "author": hit.get("user", ""),
+                    "license": "Pixabay License (Free for commercial use)",
+                    "description": hit.get("tags", ""),
+                    "duration": hit.get("duration", 0),  # Duration in seconds
+                }
+            )
+
+        return results
+
+    def download_video(self, url: str) -> bytes:
+        """Download video file from URL."""
+        response = self.session.get(url, timeout=120, stream=True)
+        response.raise_for_status()
+        return response.content
+
+
+def _create_video_client(
+    source: VideoSource, pixabay_api_key: str | None = None
+) -> VideoSourceClient:
+    """Create a video source client based on the source type."""
+    if source == VideoSource.PIXABAY:
+        if not pixabay_api_key:
+            raise ValueError("Pixabay API key is required when using Pixabay source")
+        return PixabayClient(api_key=pixabay_api_key)
+    elif source == VideoSource.WIKIMEDIA:
+        return WikimediaCommonsClient()
+    else:
+        raise ValueError(f"Unknown video source: {source}")
+
+
+def _ingest_from_source(
+    *,
+    campaign: str,
+    batch_size: int,
+    source: VideoSource,
+    pixabay_api_key: str | None,
+    s3_client: BaseClient,
+    aws_config: AwsConfig,
+    timestamp: str,
+) -> list[VideoMetadata]:
+    """Ingest videos from a single source.
+
+    Args:
+        campaign: Search query/campaign name
+        batch_size: Number of videos to ingest from this source
+        source: Video source provider
+        pixabay_api_key: API key for Pixabay (if needed)
+        s3_client: S3 client
+        aws_config: AWS configuration
+        timestamp: Timestamp for this batch
+
+    Returns:
+        List of VideoMetadata objects from this source
+    """
+    try:
+        client = _create_video_client(source, pixabay_api_key)
+        storage = S3Storage(s3_client)
+        source_name = source.value
+
+        LOGGER.info(
+            "Searching %s for campaign: %s (batch_size=%d)",
+            source_name,
+            campaign,
+            batch_size,
+        )
+        results = client.search_videos(campaign, limit=batch_size)
+
+        if not results:
+            LOGGER.warning("No results found for campaign: %s on %s", campaign, source_name)
+            return []
+
+        metadata_list = []
+
+        for video in results:
+            video_url = video["url"]
+            video_title = video.get("title", "untitled")
+            video_source = video.get("source", source_name)
+            source_id = video.get("source_id")
+
+            LOGGER.info("Downloading video from %s: %s", video_source, video_title)
+
+            try:
+                video_data = invoke_with_retry(
+                    lambda: client.download_video(video_url),
+                    max_attempts=3,
+                )
+
+                # Extract file extension from MIME type or URL
+                mime_type = video.get("mime", "video/mp4")
+                if "mp4" in mime_type or "mp4" in video_url:
+                    ext = "mp4"
+                elif "webm" in mime_type or "webm" in video_url:
+                    ext = "webm"
+                else:
+                    ext = "mp4"  # Default
+
+                # Create safe filename
+                safe_title = video_title.replace("File:", "").replace(" ", "_")
+                safe_title = "".join(c for c in safe_title if c.isalnum() or c in ("_", "-", "."))[
+                    :100
+                ]
+                if source_id:
+                    file_name = f"{video_source}_{source_id}_{safe_title}"
+                else:
+                    file_name = f"{video_source}_{safe_title}"
+
+                # Separate by source in S3 path for better data engineering practices
+                # Structure: media-raw/video/{source}/{campaign}/{timestamp}/{file_name}
+                s3_key = f"media-raw/video/{video_source}/{campaign}/{timestamp}/{file_name}.{ext}"
+
+                metadata_dict = {
+                    "source": video_source,
+                    "title": video_title,
+                    "source_id": source_id or "",
+                    "license": video.get("license", ""),
+                    "author": video.get("author", ""),
+                }
+
+                storage.upload_bytes(
+                    bucket=aws_config.video_bucket,
+                    key=s3_key,
+                    data=video_data,
+                    content_type=mime_type,
+                    metadata=metadata_dict,
+                )
+
+                metadata = VideoMetadata(
+                    source=video_source,
+                    title=video_title,
+                    file_url=video_url,
+                    license=video.get("license", ""),
+                    author=video.get("author", ""),
+                    description=video.get("description", ""),
+                    duration=video.get("duration"),  # Pixabay provides this
+                    file_size=video.get("size", len(video_data)),
+                    s3_key=s3_key,
+                    ingested_at=timestamp,
+                    source_id=source_id,
+                )
+                metadata_list.append(metadata)
+
+            except Exception as e:
+                LOGGER.error(
+                    "Failed to ingest video %s from %s: %s",
+                    video_title,
+                    video_source,
+                    e,
+                    exc_info=True,
+                )
+                continue
+
+        LOGGER.info(
+            "Ingested %d video files from %s for campaign: %s",
+            len(metadata_list),
+            source_name,
+            campaign,
+        )
+        return metadata_list
+
+    except Exception as e:
+        LOGGER.error(
+            "Failed to ingest from source %s: %s",
+            source.value,
+            e,
+            exc_info=True,
+        )
+        return []  # Return empty list on source failure, don't fail entire batch
+
+
 def ingest_video_batch(
     *,
     campaign: str,
     batch_size: int,
+    source: VideoSource | str | None = None,
+    pixabay_api_key: str | None = None,
     s3_client: BaseClient | None = None,
     aws_config: AwsConfig | None = None,
-) -> list[VideoMetadata]:
-    """Ingest a batch of Creative Commons video files from Wikimedia Commons."""
+) -> dict[str, list[VideoMetadata]]:
+    """Ingest a batch of Creative Commons video files from multiple sources.
+
+    By default, ingests from both Wikimedia Commons and Pixabay simultaneously.
+    The batch_size is distributed evenly between sources (e.g., batch_size=10 = 5 from each).
+
+    Following data engineering best practices, results are kept SEPARATED by source
+    for better traceability, compliance, and independent analysis.
+
+    Args:
+        campaign: Search query/campaign name
+        batch_size: Total number of videos to ingest (distributed across sources)
+        source: Optional video source provider ("wikimedia", "pixabay", or None for both)
+        pixabay_api_key: API key for Pixabay (will try env var if not provided)
+        s3_client: Optional S3 client
+        aws_config: Optional AWS configuration
+
+    Returns:
+        Dictionary with source as key and list of VideoMetadata as value.
+        Example: {"wikimedia": [...], "pixabay": [...]}
+    """
     if aws_config is None:
         runtime_config = get_runtime_config()
         aws_config = runtime_config.aws
@@ -129,70 +411,79 @@ def ingest_video_batch(
         resources = build_aws_resources(aws_config=aws_config)
         s3_client = resources["s3"]
 
-    client = WikimediaCommonsClient()
-    storage = S3Storage(s3_client)
+    # Determine which sources to use
+    sources_to_use: list[VideoSource] = []
+    if source is None:
+        # Default: use both sources
+        sources_to_use = [VideoSource.WIKIMEDIA, VideoSource.PIXABAY]
+    else:
+        # Normalize source to VideoSource enum
+        if isinstance(source, str):
+            try:
+                sources_to_use = [VideoSource(source.lower())]
+            except ValueError:
+                LOGGER.warning("Unknown source '%s', using both sources", source)
+                sources_to_use = [VideoSource.WIKIMEDIA, VideoSource.PIXABAY]
+        else:
+            sources_to_use = [source]
 
-    LOGGER.info(
-        "Searching Wikimedia Commons for campaign: %s (batch_size=%d)",
-        campaign,
-        batch_size,
-    )
-    results = client.search_videos(campaign, limit=batch_size)
+    # Get API key from environment if not provided and Pixabay is in use
+    if VideoSource.PIXABAY in sources_to_use and not pixabay_api_key:
+        import os
 
-    if not results:
-        LOGGER.warning("No results found for campaign: %s", campaign)
-        return []
+        pixabay_api_key = os.environ.get("MEDIA_PIPELINES_PIXABAY_API_KEY")
+        if not pixabay_api_key:
+            LOGGER.warning(
+                "Pixabay API key not found. Skipping Pixabay source. "
+                "Set MEDIA_PIPELINES_PIXABAY_API_KEY environment variable to enable Pixabay."
+            )
+            # Remove Pixabay from sources if no API key
+            sources_to_use = [s for s in sources_to_use if s != VideoSource.PIXABAY]
 
-    metadata_list = []
+    if not sources_to_use:
+        LOGGER.error("No valid sources available for video ingestion")
+        return {}
+
+    # Distribute batch_size across sources
+    videos_per_source = max(1, batch_size // len(sources_to_use))
     timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
 
-    for video in results:
-        video_url = video["url"]
-        video_title = video["title"]
-        LOGGER.info("Downloading video: %s", video_title)
+    LOGGER.info(
+        "Ingesting videos from %d source(s) for campaign: %s (total batch_size=%d, ~%d per source)",
+        len(sources_to_use),
+        campaign,
+        batch_size,
+        videos_per_source,
+    )
 
-        try:
-            video_data = invoke_with_retry(
-                lambda: client.download_video(video_url),
-                max_attempts=3,
-            )
+    # Ingest from all sources but KEEP SEPARATED by source
+    # This follows data engineering best practices:
+    # - Better traceability (know exactly which source each file came from)
+    # - Different licenses/compliance requirements per source
+    # - Independent analysis and quality checks per source
+    # - Easier debugging and troubleshooting
+    results_by_source: dict[str, list[VideoMetadata]] = {}
 
-            # Extract file extension from MIME type or URL
-            mime_type = video.get("mime", "video/mp4")
-            ext = "mp4" if "mp4" in mime_type else "webm"
-            file_name = video_title.replace("File:", "").replace(" ", "_")
-            s3_key = f"media-raw/video/{campaign}/{timestamp}/{file_name}.{ext}"
+    for source in sources_to_use:
+        source_name = source.value
+        source_metadata = _ingest_from_source(
+            campaign=campaign,
+            batch_size=videos_per_source,
+            source=source,
+            pixabay_api_key=pixabay_api_key if source == VideoSource.PIXABAY else None,
+            s3_client=s3_client,
+            aws_config=aws_config,
+            timestamp=timestamp,
+        )
+        results_by_source[source_name] = source_metadata
 
-            metadata_dict = {
-                "wikimedia_title": video_title,
-                "license": video.get("license", ""),
-                "author": video.get("author", ""),
-            }
+    total_ingested = sum(len(metadata) for metadata in results_by_source.values())
+    LOGGER.info(
+        "Total ingested: %d video files for campaign: %s from %d source(s) - "
+        "Results kept separated by source for data engineering best practices",
+        total_ingested,
+        campaign,
+        len(sources_to_use),
+    )
 
-            storage.upload_bytes(
-                bucket=aws_config.video_bucket,
-                key=s3_key,
-                data=video_data,
-                content_type=mime_type,
-                metadata=metadata_dict,
-            )
-
-            metadata = VideoMetadata(
-                wikimedia_title=video_title,
-                file_url=video_url,
-                license=video.get("license", ""),
-                author=video.get("author", ""),
-                description=video.get("description", ""),
-                duration=None,  # Would need to extract from video file
-                file_size=video.get("size", len(video_data)),
-                s3_key=s3_key,
-                ingested_at=timestamp,
-            )
-            metadata_list.append(metadata)
-
-        except Exception as e:
-            LOGGER.error("Failed to ingest video %s: %s", video_title, e, exc_info=True)
-            continue
-
-    LOGGER.info("Ingested %d video files for campaign: %s", len(metadata_list), campaign)
-    return metadata_list
+    return results_by_source

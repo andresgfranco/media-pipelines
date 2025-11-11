@@ -122,6 +122,8 @@ def test_ingest_video_batch(
         mock_client = MagicMock()
         mock_client.search_videos.return_value = [
             {
+                "source": "wikimedia",
+                "source_id": "File:Test_Video.mp4",
                 "title": "File:Test_Video.mp4",
                 "url": "https://example.com/video.mp4",
                 "size": 1024000,
@@ -134,17 +136,22 @@ def test_ingest_video_batch(
         mock_client.download_video.return_value = b"fake video data"
         mock_client_class.return_value = mock_client
 
-        metadata_list = ingest_video_batch(
+        # ingest_video_batch now returns dict separated by source
+        results_by_source = ingest_video_batch(
             campaign="nature",
             batch_size=1,
             s3_client=mock_s3_client,
             aws_config=aws_config,
         )
 
-        assert len(metadata_list) == 1
-        assert metadata_list[0].wikimedia_title == "File:Test_Video.mp4"
-        assert metadata_list[0].license == "CC-BY-4.0"
-        assert "nature" in metadata_list[0].s3_key
+        assert "wikimedia" in results_by_source
+        assert len(results_by_source["wikimedia"]) == 1
+        metadata = results_by_source["wikimedia"][0]
+        assert metadata.title == "File:Test_Video.mp4"
+        assert metadata.source == "wikimedia"
+        assert metadata.license == "CC-BY-4.0"
+        assert "wikimedia" in metadata.s3_key  # Source should be in path
+        assert "nature" in metadata.s3_key
 
         assert mock_s3_client.put_object.call_count == 1
 
@@ -156,21 +163,25 @@ def test_ingest_video_batch_empty_results(mock_s3_client, aws_config):
         mock_client.search_videos.return_value = []
         mock_client_class.return_value = mock_client
 
-        metadata_list = ingest_video_batch(
+        # ingest_video_batch now returns dict separated by source
+        results_by_source = ingest_video_batch(
             campaign="nonexistent",
             batch_size=5,
             s3_client=mock_s3_client,
             aws_config=aws_config,
         )
 
-        assert len(metadata_list) == 0
+        # Should return empty dict or dict with empty lists
+        total_count = sum(len(metadata_list) for metadata_list in results_by_source.values())
+        assert total_count == 0
         mock_s3_client.put_object.assert_not_called()
 
 
 def test_video_metadata():
     """Test VideoMetadata dataclass."""
     metadata = VideoMetadata(
-        wikimedia_title="File:Test_Video.mp4",
+        source="wikimedia",
+        title="File:Test_Video.mp4",
         file_url="https://example.com/video.mp4",
         license="CC-BY-4.0",
         author="testuser",
@@ -179,9 +190,11 @@ def test_video_metadata():
         file_size=1024000,
         s3_key="media-raw/video/nature/20240101_120000/Test_Video.mp4",
         ingested_at="20240101_120000",
+        source_id="File:Test_Video.mp4",
     )
 
-    assert metadata.wikimedia_title == "File:Test_Video.mp4"
+    assert metadata.source == "wikimedia"
+    assert metadata.title == "File:Test_Video.mp4"
     assert metadata.license == "CC-BY-4.0"
     assert metadata.author == "testuser"
     assert metadata.duration == 10.5
