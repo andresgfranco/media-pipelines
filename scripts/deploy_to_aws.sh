@@ -142,27 +142,39 @@ else
 fi
 echo ""
 
-# Step 5: Package Lambda functions
-echo "📦 Step 5: Packaging Lambda functions..."
+# Step 5: Create Lambda Layers and Package Functions
+echo "📦 Step 5: Creating Lambda Layers and packaging functions..."
+
+# Create common layer (boto3, requests) - used by all functions
+echo "   Creating common dependencies layer..."
+COMMON_LAYER_DIR="layer-common-$(date +%s)"
+mkdir -p "$COMMON_LAYER_DIR/python"
+pip install -q boto3 requests -t "$COMMON_LAYER_DIR/python" 2>/dev/null || pip install boto3 requests -t "$COMMON_LAYER_DIR/python"
+cd "$COMMON_LAYER_DIR"
+zip -q -r "../layer-common.zip" . -x "*.pyc" "__pycache__/*" "*.dist-info/*"
+cd ..
+rm -rf "$COMMON_LAYER_DIR"
+COMMON_LAYER_SIZE=$(du -h layer-common.zip | cut -f1)
+echo "      ✅ Created layer-common.zip ($COMMON_LAYER_SIZE)"
+
+# Create audio layer (librosa, pydub, numpy) - only for audio_analyze
+echo "   Creating audio dependencies layer..."
+AUDIO_LAYER_DIR="layer-audio-$(date +%s)"
+mkdir -p "$AUDIO_LAYER_DIR/python"
+pip install -q pydub librosa numpy -t "$AUDIO_LAYER_DIR/python" 2>/dev/null || echo "   Warning: Audio dependencies may not be available"
+cd "$AUDIO_LAYER_DIR"
+zip -q -r "../layer-audio.zip" . -x "*.pyc" "__pycache__/*" "*.dist-info/*"
+cd ..
+rm -rf "$AUDIO_LAYER_DIR"
+AUDIO_LAYER_SIZE=$(du -h layer-audio.zip 2>/dev/null | cut -f1 || echo "N/A")
+echo "      ✅ Created layer-audio.zip ($AUDIO_LAYER_SIZE)"
+
+# Package Lambda functions (source code only, no dependencies)
+echo "   Packaging Lambda functions (source code only)..."
 DEPLOY_DIR="deploy-lambda-$(date +%s)"
 mkdir -p "$DEPLOY_DIR"
 
-# Install dependencies
-echo "   Installing dependencies..."
-pip install -q -r <(python3 -c "
-import tomli
-with open('pyproject.toml', 'rb') as f:
-    data = tomli.load(f)
-    deps = data.get('project', {}).get('dependencies', [])
-    for dep in deps:
-        print(dep)
-") -t "$DEPLOY_DIR" 2>/dev/null || pip install -q boto3 requests -t "$DEPLOY_DIR"
-
-# Install audio dependencies
-pip install -q pydub librosa -t "$DEPLOY_DIR" 2>/dev/null || echo "   Warning: Some audio dependencies may not be available"
-
-# Copy source code
-echo "   Copying source code..."
+# Copy source code only
 cp -r shared "$DEPLOY_DIR/"
 cp -r audio_pipeline "$DEPLOY_DIR/"
 cp -r video_pipeline "$DEPLOY_DIR/"
@@ -186,37 +198,95 @@ for handler_spec in "${LAMBDA_HANDLERS[@]}"; do
     zip_file="lambda-${function_name}.zip"
 
     cd "$DEPLOY_DIR"
-    zip -q -r "../${zip_file}" . -x "*.pyc" "__pycache__/*" "*.dist-info/*"
+    # Exclude any accidentally included dependencies
+    zip -q -r "../${zip_file}" . -x "*.pyc" "__pycache__/*" "*.dist-info/*" "librosa/*" "pydub/*" "numpy/*" "scipy/*" "*.so" "*.dylib"
     cd ..
 
-    echo "      ✅ Created $zip_file"
+    ZIP_SIZE=$(du -h "$zip_file" | cut -f1)
+    echo "      ✅ Created $zip_file ($ZIP_SIZE)"
 done
 
 echo -e "${GREEN}✅ Lambda packages created${NC}"
 echo ""
 
+# Step 5b: Deploy Lambda Layers
+echo "📚 Step 5b: Deploying Lambda Layers..."
+
+# Deploy common layer
+COMMON_LAYER_NAME="${PROJECT_PREFIX}-common-dependencies"
+if aws lambda get-layer-version --layer-name "$COMMON_LAYER_NAME" --version-number 1 --region "$REGION" &>/dev/null; then
+    COMMON_LAYER_ARN=$(aws lambda get-layer-version --layer-name "$COMMON_LAYER_NAME" --version-number 1 --region "$REGION" --query 'LayerVersionArn' --output text)
+    echo "   ✅ Common layer already exists: $COMMON_LAYER_ARN"
+else
+    COMMON_LAYER_ARN=$(aws lambda publish-layer-version \
+      --layer-name "$COMMON_LAYER_NAME" \
+      --zip-file "fileb://layer-common.zip" \
+      --compatible-runtimes python3.11 \
+      --region "$REGION" \
+      --query 'LayerVersionArn' --output text)
+    echo "   ✅ Created common layer: $COMMON_LAYER_ARN"
+fi
+
+# Deploy audio layer (if it exists)
+# Note: Audio layer is large (>50MB), so we upload to S3 first if needed
+AUDIO_LAYER_NAME="${PROJECT_PREFIX}-audio-dependencies"
+AUDIO_LAYER_ARN=""
+if [ -f "layer-audio.zip" ] && [ -s "layer-audio.zip" ]; then
+    AUDIO_LAYER_SIZE=$(stat -f%z "layer-audio.zip" 2>/dev/null || stat -c%s "layer-audio.zip" 2>/dev/null || echo "0")
+    AUDIO_LAYER_SIZE_MB=$((AUDIO_LAYER_SIZE / 1024 / 1024))
+
+    if aws lambda get-layer-version --layer-name "$AUDIO_LAYER_NAME" --version-number 1 --region "$REGION" &>/dev/null; then
+        AUDIO_LAYER_ARN=$(aws lambda get-layer-version --layer-name "$AUDIO_LAYER_NAME" --version-number 1 --region "$REGION" --query 'LayerVersionArn' --output text)
+        echo "   ✅ Audio layer already exists: $AUDIO_LAYER_ARN"
+    else
+        # If layer is >50MB, upload to S3 first
+        if [ "$AUDIO_LAYER_SIZE_MB" -gt 50 ]; then
+            echo "   📤 Audio layer is large (${AUDIO_LAYER_SIZE_MB}MB), uploading to S3 first..."
+            LAYER_S3_KEY="lambda-layers/${AUDIO_LAYER_NAME}.zip"
+            aws s3 cp "layer-audio.zip" "s3://${VIDEO_BUCKET}/${LAYER_S3_KEY}" --region "$REGION" > /dev/null
+            LAYER_S3_URI="s3://${VIDEO_BUCKET}/${LAYER_S3_KEY}"
+
+            AUDIO_LAYER_ARN=$(aws lambda publish-layer-version \
+              --layer-name "$AUDIO_LAYER_NAME" \
+              --content S3Bucket="${VIDEO_BUCKET}",S3Key="${LAYER_S3_KEY}" \
+              --compatible-runtimes python3.11 \
+              --region "$REGION" \
+              --query 'LayerVersionArn' --output text 2>/dev/null || echo "")
+        else
+            AUDIO_LAYER_ARN=$(aws lambda publish-layer-version \
+              --layer-name "$AUDIO_LAYER_NAME" \
+              --zip-file "fileb://layer-audio.zip" \
+              --compatible-runtimes python3.11 \
+              --region "$REGION" \
+              --query 'LayerVersionArn' --output text 2>/dev/null || echo "")
+        fi
+
+        if [ -n "$AUDIO_LAYER_ARN" ]; then
+            echo "   ✅ Created audio layer: $AUDIO_LAYER_ARN"
+        else
+            echo "   ⚠️  Audio layer creation failed"
+        fi
+    fi
+else
+    echo "   ⚠️  Audio layer not created (dependencies not available)"
+fi
+
+echo ""
+
 # Step 6: Deploy Lambda functions
 echo "🚀 Step 6: Deploying Lambda functions..."
 
-# Base environment variables for all Lambda functions
-ENV_VARS_BASE="{
-  \"MEDIA_PIPELINES_AUDIO_BUCKET\": \"${AUDIO_BUCKET}\",
-  \"MEDIA_PIPELINES_VIDEO_BUCKET\": \"${VIDEO_BUCKET}\",
-  \"MEDIA_PIPELINES_METADATA_TABLE\": \"${METADATA_TABLE}\",
-  \"MEDIA_PIPELINES_AWS_REGION\": \"${REGION}\"
-}"
+# Base environment variables for all Lambda functions (single line JSON for AWS CLI)
+ENV_VARS_BASE="{\"MEDIA_PIPELINES_AUDIO_BUCKET\":\"${AUDIO_BUCKET}\",\"MEDIA_PIPELINES_VIDEO_BUCKET\":\"${VIDEO_BUCKET}\",\"MEDIA_PIPELINES_METADATA_TABLE\":\"${METADATA_TABLE}\",\"MEDIA_PIPELINES_AWS_REGION\":\"${REGION}\"}"
 
 # Environment variables for video_ingest (includes Pixabay API key if available)
-ENV_VARS_VIDEO_INGEST="${ENV_VARS_BASE}"
 if [ -n "${PIXABAY_API_KEY:-}" ]; then
-    ENV_VARS_VIDEO_INGEST="${ENV_VARS_BASE},
-  \"MEDIA_PIPELINES_PIXABAY_API_KEY\": \"${PIXABAY_API_KEY}\""
+    ENV_VARS_VIDEO_INGEST="{\"MEDIA_PIPELINES_AUDIO_BUCKET\":\"${AUDIO_BUCKET}\",\"MEDIA_PIPELINES_VIDEO_BUCKET\":\"${VIDEO_BUCKET}\",\"MEDIA_PIPELINES_METADATA_TABLE\":\"${METADATA_TABLE}\",\"MEDIA_PIPELINES_AWS_REGION\":\"${REGION}\",\"MEDIA_PIPELINES_PIXABAY_API_KEY\":\"${PIXABAY_API_KEY}\"}"
     echo "   ✅ Pixabay API key will be configured in video_ingest Lambda function"
 else
+    ENV_VARS_VIDEO_INGEST="$ENV_VARS_BASE"
     echo "   ⚠️  No PIXABAY_API_KEY found - video pipeline will only use Wikimedia Commons"
 fi
-ENV_VARS_VIDEO_INGEST="${ENV_VARS_VIDEO_INGEST}
-}"
 
 LAMBDA_FUNCTIONS=()
 for handler_spec in "${LAMBDA_HANDLERS[@]}"; do
@@ -230,8 +300,14 @@ for handler_spec in "${LAMBDA_HANDLERS[@]}"; do
     if [ "$function_name" = "video_ingest" ]; then
         ENV_VARS_TO_USE="$ENV_VARS_VIDEO_INGEST"
     else
-        ENV_VARS_TO_USE="${ENV_VARS_BASE}
-}"
+        ENV_VARS_TO_USE="$ENV_VARS_BASE"
+    fi
+
+    # Determine which layers to use
+    # All functions get common layer, audio_analyze also gets audio layer
+    LAYERS_TO_USE="$COMMON_LAYER_ARN"
+    if [ "$function_name" = "audio_analyze" ] && [ -n "$AUDIO_LAYER_ARN" ]; then
+        LAYERS_TO_USE="$COMMON_LAYER_ARN $AUDIO_LAYER_ARN"
     fi
 
     # Check if function exists
@@ -242,17 +318,25 @@ for handler_spec in "${LAMBDA_HANDLERS[@]}"; do
           --zip-file "fileb://${zip_file}" \
           --region "$REGION" > /dev/null
 
+        # Create temp file for environment variables
+        ENV_TEMP=$(mktemp)
+        echo "{\"Variables\":${ENV_VARS_TO_USE}}" > "$ENV_TEMP"
         aws lambda update-function-configuration \
           --function-name "$function_name_full" \
           --timeout 300 \
           --memory-size 512 \
-          --environment "Variables=${ENV_VARS_TO_USE}" \
-          --region "$REGION" > /dev/null
+          --layers $LAYERS_TO_USE \
+          --environment file://"$ENV_TEMP" \
+          --region "$REGION" > /dev/null 2>&1
+        rm -f "$ENV_TEMP"
 
         echo "      ✅ Updated $function_name_full"
     else
         # Create new function
-        aws lambda create-function \
+        # Create temp file for environment variables
+        ENV_TEMP=$(mktemp)
+        echo "{\"Variables\":${ENV_VARS_TO_USE}}" > "$ENV_TEMP"
+        if aws lambda create-function \
           --function-name "$function_name_full" \
           --runtime python3.11 \
           --role "$LAMBDA_ROLE_ARN" \
@@ -260,8 +344,21 @@ for handler_spec in "${LAMBDA_HANDLERS[@]}"; do
           --zip-file "fileb://${zip_file}" \
           --timeout 300 \
           --memory-size 512 \
-          --environment "Variables=${ENV_VARS_TO_USE}" \
-          --region "$REGION" > /dev/null
+          --layers $LAYERS_TO_USE \
+          --environment file://"$ENV_TEMP" \
+          --region "$REGION" 2>&1 | grep -q "FunctionName"; then
+            : # Success
+        else
+            echo "      ⚠️  Warning: Function creation may have failed, checking..."
+            if aws lambda get-function --function-name "$function_name_full" --region "$REGION" &>/dev/null; then
+                : # Function exists, continue
+            else
+                echo "      ❌ Failed to create $function_name_full"
+                rm -f "$ENV_TEMP"
+                continue
+            fi
+        fi
+        rm -f "$ENV_TEMP"
 
         echo "      ✅ Created $function_name_full"
     fi
@@ -353,7 +450,7 @@ EOF
 
 # Cleanup
 rm -rf "$DEPLOY_DIR"
-rm -f lambda-*.zip
+rm -f lambda-*.zip layer-*.zip
 rm -f /tmp/*-policy-updated.json /tmp/*_sm.json
 
 # Summary
