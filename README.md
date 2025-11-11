@@ -102,6 +102,12 @@ Streamlit Community Cloud is the fastest way to share it; App Runner or Fargate 
 
 ---
 
+### 🔍 Code Quality & Linting
+- **Ruff**: Fast Python linter and formatter (configured in `pyproject.toml`).
+- **Pre-commit hooks**: Automatically run linting, formatting, and tests before every commit. Install with `pip install -e '.[dev]' && pre-commit install`.
+
+---
+
 ### 🤔 Why this scope?
 - Covers the core responsibilities of a data pipeline: ingestion from external APIs, enrichment, orchestration, and observability.
 - Fits in a single day while still showcasing modern AWS patterns and clean documentation.
