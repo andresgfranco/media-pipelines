@@ -886,7 +886,7 @@ if recent_executions_summary:
                         # Add duration if available
                         if step_duration is not None:
                             if step_duration < 1:
-                                log_line += f" | Duration: {step_duration*1000:.0f}ms"
+                                log_line += f" | Duration: {step_duration * 1000:.0f}ms"
                             else:
                                 log_line += f" | Duration: {step_duration:.1f}s"
 
