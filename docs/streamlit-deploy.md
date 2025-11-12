@@ -26,10 +26,10 @@ AWS_ACCESS_KEY_ID = "your-access-key"
 AWS_SECRET_ACCESS_KEY = "your-secret-key"
 AWS_DEFAULT_REGION = "us-east-1"
 
-MEDIA_PIPELINES_AUDIO_BUCKET = "your-audio-bucket"
 MEDIA_PIPELINES_VIDEO_BUCKET = "your-video-bucket"
 MEDIA_PIPELINES_METADATA_TABLE = "your-metadata-table"
-MEDIA_PIPELINES_ENVIRONMENT = "production"
+MEDIA_PIPELINES_VIDEO_STATE_MACHINE_ARN = "arn:aws:states:..."
+MEDIA_PIPELINES_AWS_REGION = "us-east-1"
 ```
 
 ### 3. Configure App Settings
@@ -51,9 +51,9 @@ To run the dashboard locally:
 pip install -e '.[dashboard]'
 
 # Set environment variables
-export MEDIA_PIPELINES_AUDIO_BUCKET=your-bucket
 export MEDIA_PIPELINES_VIDEO_BUCKET=your-bucket
 export MEDIA_PIPELINES_METADATA_TABLE=your-table
+export MEDIA_PIPELINES_VIDEO_STATE_MACHINE_ARN=arn:aws:states:...
 export MEDIA_PIPELINES_AWS_REGION=us-east-1
 export AWS_ACCESS_KEY_ID=your-key
 export AWS_SECRET_ACCESS_KEY=your-secret

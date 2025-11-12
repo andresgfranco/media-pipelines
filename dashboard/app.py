@@ -148,6 +148,359 @@ def get_recent_executions(limit: int = 10) -> list[dict[str, Any]]:
         return []
 
 
+def get_execution_history(execution_arn: str) -> list[dict[str, Any]]:
+    """Get detailed execution history from Step Functions."""
+    try:
+        runtime_config = get_runtime_config()
+        resources = build_aws_resources(aws_config=runtime_config.aws)
+        stepfunctions = resources["stepfunctions"]
+
+        # Get execution history (all events)
+        history = []
+        paginator = stepfunctions.get_paginator("get_execution_history")
+
+        for page in paginator.paginate(executionArn=execution_arn):
+            for event in page.get("events", []):
+                history.append(event)
+
+        # Sort by timestamp
+        history.sort(key=lambda x: x.get("id", 0))
+
+        return history
+    except Exception as e:
+        st.error(f"Error fetching execution history: {e}")
+        return []
+
+
+def parse_execution_history(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Parse Step Functions execution history into structured steps."""
+    steps = []
+    state_steps = {}  # Map state name to step data
+    current_state = None  # Track current state name
+
+    # Step names mapping (from state machine)
+    step_names = {
+        "IngestVideo": "Ingest Videos",
+        "StartRekognitionJobs": "Start Rekognition Jobs",
+        "ProcessRekognitionJobs": "Process Rekognition Jobs (Map State)",
+        "WaitForJob": "Wait for Job",
+        "CheckJobStatus": "Check Job Status",
+        "JobComplete?": "Check if Job Complete",
+        "FinalizeResults": "Finalize Results",
+        "IndexVideo": "Index Video",
+    }
+
+    for event in history:
+        event_type = event.get("type", "")
+        timestamp = event.get("timestamp", 0)
+
+        # Handle timestamp - can be datetime object or milliseconds since epoch
+        if isinstance(timestamp, datetime):
+            timestamp_dt = timestamp
+        elif isinstance(timestamp, int | float):
+            # Convert milliseconds to seconds if > 1e10 (likely milliseconds)
+            if timestamp > 1e10:
+                timestamp_dt = datetime.fromtimestamp(timestamp / 1000)
+            else:
+                timestamp_dt = datetime.fromtimestamp(timestamp)
+        else:
+            timestamp_dt = None
+
+        if event_type == "ExecutionStarted":
+            steps.append(
+                {
+                    "step": "Execution Started",
+                    "status": "SUCCEEDED",
+                    "timestamp": timestamp_dt,
+                    "details": "Step Functions execution initiated",
+                    "order": 0,
+                }
+            )
+
+        elif event_type == "TaskStateEntered":
+            state_name = event.get("stateEnteredEventDetails", {}).get("name", "")
+            current_state = state_name  # Track current state
+            if state_name and state_name not in state_steps:
+                state_steps[state_name] = {
+                    "step": step_names.get(state_name, state_name),
+                    "status": "RUNNING",
+                    "timestamp": timestamp_dt,
+                    "details": f"State: {state_name}",
+                    "state_name": state_name,
+                    "order": len(steps) + len(state_steps),
+                }
+
+        elif event_type == "TaskStateExited":
+            state_name = event.get("stateExitedEventDetails", {}).get("name", "")
+            current_state = None  # Reset current state
+
+        elif event_type == "LambdaFunctionScheduled":
+            scheduled_details = event.get("lambdaFunctionScheduledEventDetails", {})
+            resource = scheduled_details.get("resource", "")
+
+            # Find the most recent running step and add lambda info
+            for state, step_data in state_steps.items():
+                if step_data.get("status") == "RUNNING" and not step_data.get("lambda"):
+                    if "lambda" in resource.lower():
+                        lambda_name = resource.split(":")[-1] if ":" in resource else resource
+                        step_data["lambda"] = lambda_name
+                        step_data["details"] = f"Lambda: {lambda_name}"
+                    break
+
+        elif event_type == "LambdaFunctionStarted":
+            # Update the most recent running step
+            for state, step_data in state_steps.items():
+                if step_data.get("status") == "RUNNING" and not step_data.get("started_at"):
+                    step_data["started_at"] = timestamp_dt
+                    break
+
+        elif event_type == "LambdaFunctionSucceeded":
+            succeeded_details = event.get("lambdaFunctionSucceededEventDetails", {})
+            output = succeeded_details.get("output", "{}")
+            try:
+                output_data = json.loads(output) if output else {}
+            except Exception:
+                # If JSON parsing fails, try to extract as string
+                output_data = {"raw_output": str(output)} if output else {}
+
+            # Associate with current state or find the most recent running step
+            if current_state and current_state in state_steps:
+                step_data = state_steps[current_state]
+                step_data["status"] = "SUCCEEDED"
+                step_data["completed_at"] = timestamp_dt
+                if output_data:
+                    step_data["output"] = output_data
+            else:
+                # Fallback: find the most recent running step
+                for state, step_data in state_steps.items():
+                    if step_data.get("status") == "RUNNING":
+                        step_data["status"] = "SUCCEEDED"
+                        step_data["completed_at"] = timestamp_dt
+                        if output_data:
+                            step_data["output"] = output_data
+                        break
+
+        elif event_type == "LambdaFunctionFailed":
+            failed_details = event.get("lambdaFunctionFailedEventDetails", {})
+            error = failed_details.get("error", "Unknown error")
+            cause = failed_details.get("cause", "")
+
+            # Find the most recent running step and mark it as failed
+            for state, step_data in state_steps.items():
+                if step_data.get("status") == "RUNNING":
+                    step_data["status"] = "FAILED"
+                    step_data["completed_at"] = timestamp_dt
+                    step_data["error"] = error
+                    step_data["cause"] = cause
+                    break
+
+        elif event_type == "TaskScheduled":
+            scheduled_details = event.get("taskScheduledEventDetails", {})
+            resource = scheduled_details.get("resource", "")
+
+            # For non-Lambda tasks (like Rekognition)
+            for state, step_data in state_steps.items():
+                if step_data.get("status") == "RUNNING" and not step_data.get("lambda"):
+                    if resource:
+                        step_data["resource"] = resource
+                        step_data["details"] = f"Resource: {resource}"
+                    break
+
+        elif event_type == "TaskStarted":
+            # Update the most recent running step
+            for state, step_data in state_steps.items():
+                if step_data.get("status") == "RUNNING" and not step_data.get("started_at"):
+                    step_data["started_at"] = timestamp_dt
+                    break
+
+        elif event_type == "TaskSucceeded":
+            succeeded_details = event.get("taskSucceededEventDetails", {})
+            output = succeeded_details.get("output", "{}")
+            try:
+                output_data = json.loads(output) if output else {}
+            except Exception:
+                output_data = {}
+
+            # Find the most recent running step and mark it as succeeded
+            for state, step_data in state_steps.items():
+                if step_data.get("status") == "RUNNING":
+                    step_data["status"] = "SUCCEEDED"
+                    step_data["completed_at"] = timestamp_dt
+                    if output_data:
+                        step_data["output"] = output_data
+                    break
+
+        elif event_type == "TaskFailed":
+            failed_details = event.get("taskFailedEventDetails", {})
+            error = failed_details.get("error", "Unknown error")
+            cause = failed_details.get("cause", "")
+
+            # Find the most recent running step and mark it as failed
+            for state, step_data in state_steps.items():
+                if step_data.get("status") == "RUNNING":
+                    step_data["status"] = "FAILED"
+                    step_data["completed_at"] = timestamp_dt
+                    step_data["error"] = error
+                    step_data["cause"] = cause
+                    break
+
+        elif event_type == "MapStateEntered":
+            state_name = event.get("mapStateEnteredEventDetails", {}).get("name", "")
+            current_state = state_name  # Track current state
+            if state_name and state_name not in state_steps:
+                map_details = event.get("mapStateEnteredEventDetails", {})
+                # Try to get input to see how many items will be processed
+                input_data = map_details.get("input", "{}")
+                try:
+                    input_json = (
+                        json.loads(input_data) if isinstance(input_data, str) else input_data
+                    )
+                    items_path = input_json.get("rekognition", {}).get("jobs", [])
+                    items_count = len(items_path) if isinstance(items_path, list) else 0
+                    details = f"Map State: Processing {items_count} job(s)"
+                except Exception:
+                    details = "Map State: Processing multiple items"
+
+                state_steps[state_name] = {
+                    "step": step_names.get(state_name, state_name),
+                    "status": "RUNNING",
+                    "timestamp": timestamp_dt,
+                    "details": details,
+                    "state_name": state_name,
+                    "order": len(steps) + len(state_steps),
+                }
+
+        elif event_type == "MapStateSucceeded":
+            map_details = event.get("mapStateSucceededEventDetails", {})
+            # Find the map state and mark as succeeded
+            for state, step_data in state_steps.items():
+                if state == "ProcessRekognitionJobs" or "Map" in step_data.get("step", ""):
+                    step_data["status"] = "SUCCEEDED"
+                    step_data["completed_at"] = timestamp_dt
+                    # Try to get output to see how many items were processed
+                    output_data = map_details.get("output", "{}")
+                    try:
+                        output_json = (
+                            json.loads(output_data) if isinstance(output_data, str) else output_data
+                        )
+                        completed_jobs = output_json if isinstance(output_json, list) else []
+                        if completed_jobs:
+                            step_data["output"] = {"completed_count": len(completed_jobs)}
+                    except Exception:
+                        pass
+                    break
+
+        elif event_type == "MapIterationStarted":
+            iteration_details = event.get("mapIterationStartedEventDetails", {})
+            # Track individual map iterations
+            iteration_index = iteration_details.get("index", 0)
+            if "ProcessRekognitionJobs" in state_steps:
+                map_step = state_steps["ProcessRekognitionJobs"]
+                if "iterations" not in map_step:
+                    map_step["iterations"] = []
+                map_step["iterations"].append(
+                    {
+                        "index": iteration_index,
+                        "started_at": timestamp_dt,
+                        "status": "RUNNING",
+                    }
+                )
+
+        elif event_type == "MapIterationSucceeded":
+            iteration_details = event.get("mapIterationSucceededEventDetails", {})
+            iteration_index = iteration_details.get("index", 0)
+            if "ProcessRekognitionJobs" in state_steps:
+                map_step = state_steps["ProcessRekognitionJobs"]
+                if "iterations" in map_step:
+                    for iter_data in map_step["iterations"]:
+                        if iter_data.get("index") == iteration_index:
+                            iter_data["status"] = "SUCCEEDED"
+                            iter_data["completed_at"] = timestamp_dt
+                            break
+
+        elif event_type == "MapIterationFailed":
+            iteration_details = event.get("mapIterationFailedEventDetails", {})
+            iteration_index = iteration_details.get("index", 0)
+            error = iteration_details.get("error", "Unknown error")
+            cause = iteration_details.get("cause", "")
+            if "ProcessRekognitionJobs" in state_steps:
+                map_step = state_steps["ProcessRekognitionJobs"]
+                if "iterations" in map_step:
+                    for iter_data in map_step["iterations"]:
+                        if iter_data.get("index") == iteration_index:
+                            iter_data["status"] = "FAILED"
+                            iter_data["completed_at"] = timestamp_dt
+                            iter_data["error"] = error
+                            iter_data["cause"] = cause
+                            break
+
+        elif event_type == "WaitStateEntered":
+            wait_details = event.get("waitStateEnteredEventDetails", {})
+            seconds = wait_details.get("seconds", 0)
+            if seconds:
+                # Add wait step if not already tracked
+                wait_state_name = wait_details.get("name", "WaitForJob")
+                if wait_state_name not in state_steps:
+                    state_steps[wait_state_name] = {
+                        "step": f"Wait {seconds}s",
+                        "status": "RUNNING",
+                        "timestamp": timestamp_dt,
+                        "details": f"Waiting {seconds} seconds",
+                        "state_name": wait_state_name,
+                        "order": len(steps) + len(state_steps),
+                    }
+
+        elif event_type == "WaitStateExited":
+            wait_details = event.get("waitStateExitedEventDetails", {})
+            wait_state_name = wait_details.get("name", "WaitForJob")
+            if wait_state_name in state_steps:
+                state_steps[wait_state_name]["status"] = "SUCCEEDED"
+                state_steps[wait_state_name]["completed_at"] = timestamp_dt
+
+        elif event_type == "ExecutionSucceeded":
+            steps.append(
+                {
+                    "step": "Execution Completed",
+                    "status": "SUCCEEDED",
+                    "timestamp": timestamp_dt,
+                    "details": "All steps completed successfully",
+                    "order": 9999,
+                }
+            )
+
+        elif event_type == "ExecutionFailed":
+            failed_details = event.get("executionFailedEventDetails", {})
+            error = failed_details.get("error", "Unknown error")
+            cause = failed_details.get("cause", "")
+            steps.append(
+                {
+                    "step": "Execution Failed",
+                    "status": "FAILED",
+                    "timestamp": timestamp_dt,
+                    "details": f"Error: {error}",
+                    "cause": cause,
+                    "order": 9999,
+                }
+            )
+
+    # Add all state steps to the list and calculate durations
+    for step_data in state_steps.values():
+        # Calculate duration if both timestamps are available
+        if step_data.get("timestamp") and step_data.get("completed_at"):
+            duration = (step_data["completed_at"] - step_data["timestamp"]).total_seconds()
+            step_data["duration"] = duration
+        elif step_data.get("started_at") and step_data.get("completed_at"):
+            duration = (step_data["completed_at"] - step_data["started_at"]).total_seconds()
+            step_data["duration"] = duration
+
+        steps.append(step_data)
+
+    # Sort by order (preserve execution order)
+    steps.sort(key=lambda x: (x.get("order", 0), x.get("timestamp") or datetime.min))
+
+    return steps
+
+
 def get_pipeline_stats() -> dict[str, int]:
     """Get aggregated statistics for video pipeline, across all campaigns."""
     try:
@@ -265,13 +618,18 @@ with st.sidebar:
     st.divider()
 
     # About section (compact, below button)
-    with st.expander("ℹ️ About", expanded=False):
+    with st.expander("ℹ️ About This Dashboard", expanded=False):
         st.markdown("""
-        **Video processing pipeline** that ingests Creative Commons videos from Wikimedia Commons and Pixabay, analyzes them with Amazon Rekognition, and stores metadata in DynamoDB.
+        This dashboard provides manual control and monitoring for a video processing pipeline built as a single-day demonstration of data engineering capabilities. The pipeline ingests Creative Commons videos from public APIs (Wikimedia Commons and Pixabay), enriches them with Amazon Rekognition computer vision, and stores structured metadata.
 
-        **Workflow:** Ingest → Process (Rekognition) → Index
+        **Purpose:** This demo showcases end-to-end pipeline orchestration, serverless compute, and observability patterns. While production pipelines typically handle thousands or millions of files, this implementation uses small batch sizes to:
+        - Minimize AWS resource consumption for demonstration purposes
+        - Work within public API rate limits and availability constraints
+        - Provide clear visibility into each step of the workflow
 
-        **Automated:** Runs weekly on Mondays via EventBridge.
+        **Workflow:** Ingest → Start Rekognition Jobs → Process (wait/poll) → Finalize Results → Index
+
+        **Automated:** Runs weekly on Mondays via EventBridge. Manual triggers available here for testing and demonstration.
         """)
 
 # Main content - Overall Statistics (without title)
@@ -473,12 +831,294 @@ if recent_executions_summary:
                 labels_count = summary.get("total_labels", 0)
                 st.write(f"- **{video_name}** ({labels_count} labels detected)")
 
+    # Show Step Functions execution log
+    st.markdown("#### Step Functions Execution Log")
+
+    execution_arn = last_exec.get("execution_arn", "")
+    if execution_arn:
+        with st.spinner("Loading execution history..."):
+            history = get_execution_history(execution_arn)
+            if history:
+                steps = parse_execution_history(history)
+
+                # Enrich steps with data from execution output
+                # Get execution details to enrich log
+                try:
+                    runtime_config = get_runtime_config()
+                    resources = build_aws_resources(aws_config=runtime_config.aws)
+                    stepfunctions = resources["stepfunctions"]
+                    exec_details = stepfunctions.describe_execution(executionArn=execution_arn)
+                    output_data = (
+                        json.loads(exec_details.get("output", "{}"))
+                        if exec_details.get("output")
+                        else {}
+                    )
+
+                    # Enrich each step with output data if available
+                    for step in steps:
+                        state_name = step.get("state_name", "")
+
+                        # Enrich IngestVideo step
+                        if state_name == "IngestVideo" and not step.get("output"):
+                            step["output"] = {
+                                "ingested_count": output_data.get("ingested_count", 0),
+                                "source_counts": output_data.get("source_counts", {}),
+                                "metadata_by_source": output_data.get("metadata_by_source", {}),
+                                "metadata": output_data.get("metadata", []),
+                            }
+
+                        # Enrich StartRekognitionJobs step
+                        if state_name == "StartRekognitionJobs" and not step.get("output"):
+                            rekognition_data = output_data.get("rekognition", {})
+                            step["output"] = {
+                                "jobs": rekognition_data.get("jobs", []),
+                            }
+
+                        # Enrich FinalizeResults step
+                        if state_name == "FinalizeResults" and not step.get("output"):
+                            finalization_data = output_data.get("finalization", {})
+                            step["output"] = {
+                                "processed_count": finalization_data.get("processed_count", 0),
+                                "results": finalization_data.get("results", []),
+                            }
+
+                        # Enrich IndexVideo step
+                        if state_name == "IndexVideo" and not step.get("output"):
+                            indexing_data = output_data.get("indexing", {})
+                            step["output"] = {
+                                "indexed_count": indexing_data.get("indexed_count", 0),
+                            }
+                except Exception as e:
+                    st.warning(f"Could not enrich log with execution output: {e}")
+
+                # Display log-style format
+                log_container = st.container()
+                with log_container:
+                    # Use code block style for log appearance
+                    log_lines = []
+
+                    for step in steps:
+                        step_name = step.get("step", "Unknown Step")
+                        step_status = step.get("status", "UNKNOWN")
+                        step_timestamp = step.get("timestamp")
+                        step_details = step.get("details", "")
+                        step_lambda = step.get("lambda", "")
+                        step_output = step.get("output", {})
+                        step_error = step.get("error", "")
+                        step_cause = step.get("cause", "")
+                        step_duration = step.get("duration")
+                        step_iterations = step.get("iterations", [])
+
+                        # Format timestamp
+                        if step_timestamp:
+                            time_str = step_timestamp.strftime("%Y-%m-%d %H:%M:%S")
+                        else:
+                            time_str = "N/A"
+
+                        # Status prefix
+                        if step_status == "SUCCEEDED":
+                            status_prefix = "[SUCCESS]"
+                            status_color = "#00ff00"
+                        elif step_status == "FAILED":
+                            status_prefix = "[FAILED]"
+                            status_color = "#ff4444"
+                        elif step_status == "RUNNING":
+                            status_prefix = "[RUNNING]"
+                            status_color = "#4488ff"
+                        else:
+                            status_prefix = "[PENDING]"
+                            status_color = "#888888"
+
+                        # Clean step name (remove emojis)
+                        clean_step_name = step_name
+                        # Remove common emoji patterns
+                        import re
+
+                        clean_step_name = re.sub(
+                            r"[📥🚀🔄⏳🔍❓✅📝❌]", "", clean_step_name
+                        ).strip()
+
+                        # Build log line
+                        log_line = f"{time_str} {status_prefix} {clean_step_name}"
+
+                        if step_lambda:
+                            log_line += f" | Lambda: {step_lambda}"
+
+                        # Add duration if available
+                        if step_duration is not None:
+                            if step_duration < 1:
+                                log_line += f" | Duration: {step_duration*1000:.0f}ms"
+                            else:
+                                log_line += f" | Duration: {step_duration:.1f}s"
+
+                        # Add iteration count for Map State
+                        if step_iterations:
+                            succeeded_count = sum(
+                                1 for it in step_iterations if it.get("status") == "SUCCEEDED"
+                            )
+                            log_line += f" | Iterations: {succeeded_count}/{len(step_iterations)}"
+
+                        log_lines.append(
+                            {
+                                "line": log_line,
+                                "status": step_status,
+                                "color": status_color,
+                                "details": step_details,
+                                "output": step_output,
+                                "error": step_error,
+                                "cause": step_cause,
+                            }
+                        )
+
+                    # Build complete log text with detailed information
+                    log_text_lines = []
+
+                    for log_entry in log_lines:
+                        log_line = log_entry["line"]
+                        log_text_lines.append(log_line)
+
+                        # Show details if available
+                        if log_entry["details"]:
+                            # Skip generic state details
+                            if (
+                                not log_entry["details"].startswith("State:")
+                                or "Map State" in log_entry["details"]
+                            ):
+                                log_text_lines.append(f"  → {log_entry['details']}")
+
+                        # Show detailed output information
+                        if log_entry["output"] and isinstance(log_entry["output"], dict):
+                            output = log_entry["output"]
+
+                            # Ingest step details
+                            if "ingested_count" in output:
+                                log_text_lines.append(
+                                    f"  → Videos Ingested: {output.get('ingested_count', 0)}"
+                                )
+                                if "source_counts" in output:
+                                    source_counts = output.get("source_counts", {})
+                                    log_text_lines.append(f"  → By Source: {source_counts}")
+                                if "metadata_by_source" in output:
+                                    metadata_by_source = output.get("metadata_by_source", {})
+                                    for source, videos in metadata_by_source.items():
+                                        if videos:
+                                            log_text_lines.append(
+                                                f"  → {source.capitalize()} Videos:"
+                                            )
+                                            for video in videos:
+                                                video_title = video.get("title", "Untitled")
+                                                source_id = video.get("source_id", "")
+                                                s3_key = video.get("s3_key", "")
+                                                log_text_lines.append(f"    • {video_title}")
+                                                log_text_lines.append(f"      ID: {source_id}")
+                                                log_text_lines.append(f"      S3 Key: {s3_key}")
+
+                            # Rekognition start details
+                            if "jobs" in output:
+                                jobs = output.get("jobs", [])
+                                jobs_count = len(jobs)
+                                log_text_lines.append(f"  → Rekognition Jobs Started: {jobs_count}")
+                                for idx, job in enumerate(jobs, 1):
+                                    job_id = job.get("job_id", "N/A")
+                                    video_key = job.get("video_s3_key", "N/A")
+                                    job_status = job.get("status", "N/A")
+                                    log_text_lines.append(f"    Job #{idx}:")
+                                    log_text_lines.append(f"      Job ID: {job_id}")
+                                    log_text_lines.append(f"      Video: {video_key}")
+                                    log_text_lines.append(f"      Status: {job_status}")
+
+                            # Finalization details
+                            if "processed_count" in output:
+                                log_text_lines.append(
+                                    f"  → Videos Processed: {output.get('processed_count', 0)}"
+                                )
+                                if "results" in output:
+                                    results = output.get("results", [])
+                                    for idx, result in enumerate(results, 1):
+                                        job_id = result.get("job_id", "N/A")
+                                        video_key = result.get("video_s3_key", "N/A")
+                                        processed_key = result.get("processed_key", "N/A")
+                                        summary = result.get("summary", {})
+                                        log_text_lines.append(f"    Result #{idx}:")
+                                        log_text_lines.append(f"      Job ID: {job_id}")
+                                        log_text_lines.append(f"      Video: {video_key}")
+                                        log_text_lines.append(f"      Processed: {processed_key}")
+                                        if summary:
+                                            total_labels = summary.get("total_labels", 0)
+                                            top_labels = summary.get("top_labels", [])
+                                            log_text_lines.append(
+                                                f"      Labels Detected: {total_labels}"
+                                            )
+                                            if top_labels:
+                                                # Extract label names (top_labels is a list of dicts)
+                                                label_names = [
+                                                    label.get("name", "Unknown")
+                                                    for label in top_labels[:5]
+                                                    if isinstance(label, dict)
+                                                ]
+                                                if label_names:
+                                                    log_text_lines.append(
+                                                        f"      Top Labels: {', '.join(label_names)}"
+                                                    )
+
+                            # Indexing details
+                            if "indexed_count" in output:
+                                log_text_lines.append(
+                                    f"  → Videos Indexed: {output.get('indexed_count', 0)}"
+                                )
+
+                        # Show error if failed
+                        if log_entry["status"] == "FAILED":
+                            if log_entry["error"]:
+                                log_text_lines.append(f"  ERROR: {log_entry['error']}")
+                            if log_entry["cause"]:
+                                log_text_lines.append(f"  CAUSE: {log_entry['cause']}")
+
+                    # Display as code block with scrollable container
+                    log_text = "\n".join(log_text_lines)
+
+                    # Create scrollable container with fixed height
+                    st.markdown(
+                        """
+                    <style>
+                    .log-scroll-container {
+                        max-height: 600px;
+                        overflow-y: auto;
+                        overflow-x: auto;
+                        border: 1px solid rgba(250, 250, 250, 0.2);
+                        border-radius: 5px;
+                        padding: 15px;
+                        background-color: #0e1117;
+                        font-family: 'Courier New', monospace;
+                    }
+                    .log-scroll-container pre {
+                        margin: 0;
+                        padding: 0;
+                        background: transparent;
+                        border: none;
+                    }
+                    </style>
+                    """,
+                        unsafe_allow_html=True,
+                    )
+
+                    # Display log in scrollable container
+                    st.markdown('<div class="log-scroll-container">', unsafe_allow_html=True)
+                    st.code(log_text, language="log")
+                    st.markdown("</div>", unsafe_allow_html=True)
+            else:
+                st.info("Execution history not available yet. The execution may still be running.")
+
     # Show execution details in expander
-    with st.expander("📋 Execution Details", expanded=False):
+    with st.expander("📋 Execution Metadata", expanded=False):
         col1, col2 = st.columns(2)
         with col1:
             st.write("**Time:**", last_exec["timestamp"])
             st.write("**Execution ID:**", last_exec.get("execution_id", "N/A"))
+            st.write(
+                "**Execution ARN:**",
+                execution_arn[:80] + "..." if len(execution_arn) > 80 else execution_arn,
+            )
         with col2:
             st.write(
                 "**Status:**",

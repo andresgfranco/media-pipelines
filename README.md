@@ -1,10 +1,14 @@
 ## 🚀 Media Pipelines Demo
 
 ### 🎯 What is this about?
-A single-day sprint that wires up a practical video pipeline on AWS:
-- **Video pipeline** pulls Creative Commons clips and runs computer vision so each file comes with scene-level labels ready for an editor or automation agent.
+Single-day video pipeline on AWS that:
+- Ingests Creative Commons videos from Wikimedia Commons and Pixabay
+- Runs Amazon Rekognition for scene-level labels
+- Stores structured metadata ready for editors or automation
 
-The pipeline runs on a schedule, and a tiny Streamlit dashboard lets anyone fire it manually, tweak parameters, and inspect what landed in the data lake.
+Runs on schedule (EventBridge) with a Streamlit dashboard for manual control and monitoring.
+
+**🔗 [Streamlit Dashboard](YOUR_STREAMLIT_URL_HERE)**
 
 ---
 
@@ -17,96 +21,95 @@ The pipeline runs on a schedule, and a tiny Streamlit dashboard lets anyone fire
 - **Notifications**: optional Amazon SNS
 
 **External sources**
-- 🎬 Wikimedia Commons API and Pixabay API for Creative Commons video
+- 🎬 Wikimedia Commons API and Pixabay API (Creative Commons video)
 
-APIs were selected because they ship legal, attribution-friendly assets without manual uploads, keeping the MVP realistic and fast to deliver.
+Chosen for legal, attribution-friendly assets without manual uploads.
 
 ---
 
 ### 🔄 Campaigns and triggers
-- **Campaigns**: a curated list of themes (e.g. `travel`, `tech`, `nature`) stored in S3 or Parameter Store so we always get results; documentation explains how to swap in automatic trend feeds later.
+- **Campaigns**: Themes like `travel`, `tech`, `nature` stored in S3/Parameter Store
 - **Triggers**:
-  - Automatic (EventBridge cron) reads the active campaign and batch sizes, then kicks off the pipeline.
-  - Manual (Streamlit dashboard) lets you change the campaign, adjust batch sizes (default 2 video), and run the pipeline instantly. The chosen campaign persists so the next scheduled run uses it too.
+  - **Automatic**: EventBridge cron runs weekly
+  - **Manual**: Streamlit dashboard (default batch size: 2 videos). Campaign persists for next scheduled run.
 
 ---
 
-### 🎥 Video pipeline (computer vision enrichment)
-1. **Ingest Lambda**
-   - Reads campaign and `batch_size_video`.
-   - Searches Wikimedia Commons for Creative Commons clips matching the theme; if none appear we can fall back to other APIs.
-   - Uploads files to `media-raw/video/<campaign>/<timestamp>/`.
+### 🎥 Video pipeline
+1. **Ingest Lambda**: Searches Wikimedia Commons and Pixabay, distributes batch evenly, prevents duplicates (checks DynamoDB), uploads to `media-raw/video/<source>/<campaign>/<timestamp>/`
 
-2. **Rekognition starter**
-   - Launches Amazon Rekognition Video for label detection and optional moderation.
+2. **Rekognition starter**: Launches one Rekognition job per video for label detection
 
-3. **Step Functions wait loop**
-   - Polls Rekognition until the job completes.
+3. **Map State**: Processes jobs in parallel (max 5), waits 30s between checks, polls until complete
 
-4. **Finalize Lambda**
-   - Retrieves labels, timestamps, scene segments, and moderation flags.
-   - Normalizes everything into `media-processed/video/<campaign>/<timestamp>/labels.json` with a friendly summary.
+4. **Finalize Lambda**: Retrieves labels/timestamps/moderation, saves to `media-processed/video/<source>/<campaign>/<timestamp>/labels.json` with summary
 
-5. **Monitoring**
-   - Streamlit shows processed clips, highlights top labels, and records execution status.
+5. **Index Lambda**: Stores metadata in DynamoDB for dashboard queries
+
+6. **Monitoring**: Streamlit shows execution logs, status, and statistics
 
 ---
 
 ### 📊 Streamlit dashboard
-- Campaign dropdown (persists to S3 or Parameter Store)
-- Slider for video batch size
-- Button for manual runs
-- Table of recent executions (status, campaign, batch size, timestamps)
-- Counters of raw vs processed assets per campaign
-- Peek into the latest JSON summaries
+- **Manual triggers**: Campaign dropdown + batch size slider
+- **Real-time monitoring**: Auto-refreshes during execution, shows Step Functions logs
+- **Execution history**: Table with status, campaign, batch size, files processed, execution IDs
+- **Statistics**: Raw/processed counts by source (Wikimedia/Pixabay)
+- **Detailed logs**: Full Step Functions history (timestamps, durations, Lambda outputs, job IDs, S3 keys, labels)
+- **Last execution summary**: Videos received/processed, expandable execution log
 
-Streamlit Community Cloud is the fastest way to share it; App Runner or Fargate are AWS-native alternatives.
-
----
-
-### 🪣 Data lake view
-- Folder pattern (following data engineering best practices - sources separated):
-  ```
-  media-raw/<type>/<source>/<campaign>/<YYYYMMDD>/<filename>
-  media-processed/<type>/<source>/<campaign>/<YYYYMMDD>/<summary>.json
-  ```
-  Example:
-  ```
-  media-raw/video/wikimedia/nature/20240115_120000/video1.mp4
-  media-raw/video/pixabay/nature/20240115_120000/video2.mp4
-  media-processed/video/wikimedia/nature/20240115_120000/video1_labels.json
-  media-processed/video/pixabay/nature/20240115_120000/video2_labels.json
-  ```
-- Sources are kept separated for better traceability, compliance, and independent analysis.
-- Lightweight index file or DynamoDB table captures every processed artifact so the dashboard can show history and totals.
+Auto-refreshes when running. Deploy via Streamlit Community Cloud, App Runner, or Fargate.
 
 ---
 
-### ✅ Testing in scope (built during the day)
-- Unit tests for utility functions (API response parsing, metadata calculations) using `pytest`.
-- A smoke test script that triggers each Step Function with batch size 1 and checks S3 for new outputs. Intended to run before demo/hand-off.
+### 🪣 Data lake structure
+```
+media-raw/<type>/<source>/<campaign>/<YYYYMMDD>/<filename>
+media-processed/<type>/<source>/<campaign>/<YYYYMMDD>/<summary>.json
+```
+
+Example:
+```
+media-raw/video/wikimedia/nature/20240115_120000/video1.mp4
+media-raw/video/pixabay/nature/20240115_120000/video2.mp4
+media-processed/video/wikimedia/nature/20240115_120000/video1_labels.json
+media-processed/video/pixabay/nature/20240115_120000/video2_labels.json
+```
+
+Sources separated for traceability. DynamoDB indexes all processed artifacts for dashboard queries.
 
 ---
 
-### 🔍 Code Quality & Linting
-- **Ruff**: Fast Python linter and formatter (configured in `pyproject.toml`).
-- **Pre-commit hooks**: Automatically run linting, formatting, and tests before every commit.
+### ✅ Testing
+- Unit tests (`pytest`) for API parsing and metadata calculations
+- Smoke test script: triggers Step Functions (batch size 1), verifies S3 outputs
+
+---
+
+### 🔍 Code Quality
+- **Ruff**: Linter/formatter (`pyproject.toml`)
+- **Pre-commit hooks**: Auto-run linting, formatting, tests
 
 ---
 
 ### 🤔 Why this scope?
-- Covers the core responsibilities of a data pipeline: ingestion from external APIs, enrichment, orchestration, and observability.
-- Fits in a single day while still showcasing modern AWS patterns and clean documentation.
-- Campaigns are preselected so the demo always produces meaningful output, yet the architecture already expects more advanced inputs (trend feeds, user-specific campaigns) later.
-- Batch sizes are configurable per run. Defaults stay small for the MVP, but the design is ready for larger volumes as soon as we flip the switch.
+Single-day demo showcasing data engineering: ingestion, enrichment, orchestration, observability.
+
+**Why small batch sizes?**
+- Minimize personal AWS costs for demo
+- Stay within public API rate limits (Wikimedia/Pixabay)
+- Better visibility for debugging
+- Demo-friendly output
+
+Production-ready architecture—scale by increasing batch sizes and enabling parallel processing. Preselected campaigns ensure consistent output; architecture supports trend feeds and user-specific campaigns.
 
 ---
 
-### 🔭 What's next after the MVP?
-- Automate campaign rotation via Pytrends or another trends provider.
-- Parallelize ingestion with Step Functions Map states for high-volume runs.
-- Persist metadata in DynamoDB or OpenSearch and expose APIs to downstream services.
-- Add deeper CV features (OpenCV shot detection, scene transitions).
-- Extend computer vision to tag aesthetic and production cues (editing style, acting style, lighting treatment, scenography, wardrobe, etc.).
-- Build fuller observability (CloudWatch dashboards, alarms, Slack alerts).
-- Expand automated test coverage: integration tests with LocalStack, end-to-end regression runs triggered in CI.
+### 🔭 Potential next steps
+- Automate campaign rotation (Pytrends/trends provider)
+- Parallelize ingestion (Step Functions Map states)
+- Expose APIs for downstream services (DynamoDB/OpenSearch)
+- Deeper CV features (OpenCV shot detection, scene transitions)
+- Aesthetic tagging (editing style, lighting, scenography, wardrobe)
+- Full observability (CloudWatch dashboards, alarms, Slack alerts)
+- Integration tests (LocalStack), CI/CD regression runs
