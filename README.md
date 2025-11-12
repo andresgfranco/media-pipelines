@@ -13,7 +13,8 @@ Runs on schedule (EventBridge) with a Streamlit dashboard for manual control and
 ---
 
 ### 🧱 Building blocks (built in one day)
-- **Orchestration**: AWS Step Functions (wait/choice for async jobs)
+- **Orchestration**: AWS Step Functions (Map state for parallel processing, wait/choice for async jobs)
+  - State machine definition: `infrastructure/video_state_machine.asl.json`
 - **Compute**: AWS Lambda (Python 3.11)
 - **Storage**: Amazon S3 (`media-raw/`, `media-processed/`)
 - **Scheduling**: Amazon EventBridge (weekly cron)
