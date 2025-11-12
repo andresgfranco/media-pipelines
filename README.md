@@ -8,7 +8,7 @@ Single-day video pipeline on AWS that:
 
 Runs on schedule (EventBridge) with a Streamlit dashboard for manual control and monitoring.
 
-**🔗 [Streamlit Dashboard](YOUR_STREAMLIT_URL_HERE)**
+**🔗 [Streamlit Dashboard](https://media-pipelines-hp5znpcvq6jetbmficsrnd.streamlit.app/)**
 
 ---
 
