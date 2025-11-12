@@ -4,24 +4,29 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import time
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
+import pandas as pd
 import streamlit as st
 
-from shared.aws import S3Storage, build_aws_resources, trigger_state_machine
-from shared.config import get_runtime_config
-from shared.index import query_processed_media
+project_root = Path(__file__).parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
 
-# Page config
+from shared.aws import S3Storage, build_aws_resources, trigger_state_machine  # noqa: E402
+from shared.config import get_runtime_config  # noqa: E402
+from shared.index import query_processed_media  # noqa: E402
+
 st.set_page_config(
     page_title="Video Pipeline Dashboard",
     page_icon="🎬",
     layout="wide",
 )
 
-# Predefined campaigns that work well
 PREDEFINED_CAMPAIGNS = [
     "nature",
     "tech",
@@ -30,10 +35,8 @@ PREDEFINED_CAMPAIGNS = [
     "landscape",
 ]
 
-# Default campaign
 DEFAULT_CAMPAIGN = "nature"
 
-# Initialize session state
 if "campaign" not in st.session_state:
     st.session_state.campaign = DEFAULT_CAMPAIGN
 if "batch_size_video" not in st.session_state:
@@ -54,22 +57,18 @@ def list_campaigns() -> list[str]:
         runtime_config = get_runtime_config()
         campaigns = set()
 
-        # List video campaigns (Wikimedia/Pixabay)
         for key in storage.list_keys(
             bucket=runtime_config.aws.video_bucket, prefix="media-raw/video/"
         ):
             parts = key.split("/")
-            if len(parts) >= 4:  # media-raw/video/{source}/{campaign}/
+            if len(parts) >= 4:
                 campaign = parts[3]
-                # Filter out API names, only include valid themes
                 if campaign not in {"internetarchive", "wikimedia", "pixabay"}:
                     campaigns.add(campaign)
 
-        # Merge with predefined campaigns and return sorted
         all_campaigns = campaigns.union(set(PREDEFINED_CAMPAIGNS))
         return sorted(list(all_campaigns))
     except Exception:
-        # Fallback to predefined campaigns if S3 access fails
         return PREDEFINED_CAMPAIGNS
 
 
@@ -82,7 +81,6 @@ def get_recent_executions(limit: int = 10) -> list[dict[str, Any]]:
 
         executions = []
 
-        # Get video pipeline executions
         video_sm_arn = os.environ.get("MEDIA_PIPELINES_VIDEO_STATE_MACHINE_ARN")
         if video_sm_arn:
             try:
@@ -106,19 +104,13 @@ def get_recent_executions(limit: int = 10) -> list[dict[str, Any]]:
                     else:
                         timestamp_str = str(start_date).replace("T", " ").split(".")[0]
 
-                    # Get processed count from finalization step (this is the REAL number of processed files)
-                    # The FinalizeResults step stores its output in $.finalization
                     finalization_processed = output_data.get("finalization", {}).get(
                         "processed_count", 0
                     )
-                    # Use finalization.processed_count as the source of truth
                     files_processed = finalization_processed
 
-                    # Get ingested videos metadata
                     ingested_videos = output_data.get("metadata", [])
                     ingested_by_source = output_data.get("metadata_by_source", {})
-
-                    # Get processed videos from finalization results
                     processed_videos = output_data.get("finalization", {}).get("results", [])
 
                     executions.append(
@@ -139,7 +131,6 @@ def get_recent_executions(limit: int = 10) -> list[dict[str, Any]]:
             except Exception as e:
                 st.error(f"Error fetching video executions: {e}")
 
-        # Sort by timestamp descending (most recent first)
         executions.sort(key=lambda x: x["timestamp_obj"], reverse=True)
         return executions[:limit]
 
@@ -155,7 +146,6 @@ def get_execution_history(execution_arn: str) -> list[dict[str, Any]]:
         resources = build_aws_resources(aws_config=runtime_config.aws)
         stepfunctions = resources["stepfunctions"]
 
-        # Get execution history (all events)
         history = []
         paginator = stepfunctions.get_paginator("get_execution_history")
 
@@ -163,7 +153,6 @@ def get_execution_history(execution_arn: str) -> list[dict[str, Any]]:
             for event in page.get("events", []):
                 history.append(event)
 
-        # Sort by timestamp
         history.sort(key=lambda x: x.get("id", 0))
 
         return history
@@ -175,10 +164,9 @@ def get_execution_history(execution_arn: str) -> list[dict[str, Any]]:
 def parse_execution_history(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Parse Step Functions execution history into structured steps."""
     steps = []
-    state_steps = {}  # Map state name to step data
-    current_state = None  # Track current state name
+    state_steps = {}
+    current_state = None
 
-    # Step names mapping (from state machine)
     step_names = {
         "IngestVideo": "Ingest Videos",
         "StartRekognitionJobs": "Start Rekognition Jobs",
@@ -194,11 +182,9 @@ def parse_execution_history(history: list[dict[str, Any]]) -> list[dict[str, Any
         event_type = event.get("type", "")
         timestamp = event.get("timestamp", 0)
 
-        # Handle timestamp - can be datetime object or milliseconds since epoch
         if isinstance(timestamp, datetime):
             timestamp_dt = timestamp
         elif isinstance(timestamp, int | float):
-            # Convert milliseconds to seconds if > 1e10 (likely milliseconds)
             if timestamp > 1e10:
                 timestamp_dt = datetime.fromtimestamp(timestamp / 1000)
             else:
@@ -219,7 +205,7 @@ def parse_execution_history(history: list[dict[str, Any]]) -> list[dict[str, Any
 
         elif event_type == "TaskStateEntered":
             state_name = event.get("stateEnteredEventDetails", {}).get("name", "")
-            current_state = state_name  # Track current state
+            current_state = state_name
             if state_name and state_name not in state_steps:
                 state_steps[state_name] = {
                     "step": step_names.get(state_name, state_name),
@@ -232,13 +218,12 @@ def parse_execution_history(history: list[dict[str, Any]]) -> list[dict[str, Any
 
         elif event_type == "TaskStateExited":
             state_name = event.get("stateExitedEventDetails", {}).get("name", "")
-            current_state = None  # Reset current state
+            current_state = None
 
         elif event_type == "LambdaFunctionScheduled":
             scheduled_details = event.get("lambdaFunctionScheduledEventDetails", {})
             resource = scheduled_details.get("resource", "")
 
-            # Find the most recent running step and add lambda info
             for state, step_data in state_steps.items():
                 if step_data.get("status") == "RUNNING" and not step_data.get("lambda"):
                     if "lambda" in resource.lower():
@@ -248,7 +233,6 @@ def parse_execution_history(history: list[dict[str, Any]]) -> list[dict[str, Any
                     break
 
         elif event_type == "LambdaFunctionStarted":
-            # Update the most recent running step
             for state, step_data in state_steps.items():
                 if step_data.get("status") == "RUNNING" and not step_data.get("started_at"):
                     step_data["started_at"] = timestamp_dt
@@ -260,10 +244,8 @@ def parse_execution_history(history: list[dict[str, Any]]) -> list[dict[str, Any
             try:
                 output_data = json.loads(output) if output else {}
             except Exception:
-                # If JSON parsing fails, try to extract as string
                 output_data = {"raw_output": str(output)} if output else {}
 
-            # Associate with current state or find the most recent running step
             if current_state and current_state in state_steps:
                 step_data = state_steps[current_state]
                 step_data["status"] = "SUCCEEDED"
@@ -271,7 +253,6 @@ def parse_execution_history(history: list[dict[str, Any]]) -> list[dict[str, Any
                 if output_data:
                     step_data["output"] = output_data
             else:
-                # Fallback: find the most recent running step
                 for state, step_data in state_steps.items():
                     if step_data.get("status") == "RUNNING":
                         step_data["status"] = "SUCCEEDED"
@@ -298,7 +279,6 @@ def parse_execution_history(history: list[dict[str, Any]]) -> list[dict[str, Any
             scheduled_details = event.get("taskScheduledEventDetails", {})
             resource = scheduled_details.get("resource", "")
 
-            # For non-Lambda tasks (like Rekognition)
             for state, step_data in state_steps.items():
                 if step_data.get("status") == "RUNNING" and not step_data.get("lambda"):
                     if resource:
@@ -307,7 +287,6 @@ def parse_execution_history(history: list[dict[str, Any]]) -> list[dict[str, Any
                     break
 
         elif event_type == "TaskStarted":
-            # Update the most recent running step
             for state, step_data in state_steps.items():
                 if step_data.get("status") == "RUNNING" and not step_data.get("started_at"):
                     step_data["started_at"] = timestamp_dt
@@ -321,7 +300,6 @@ def parse_execution_history(history: list[dict[str, Any]]) -> list[dict[str, Any
             except Exception:
                 output_data = {}
 
-            # Find the most recent running step and mark it as succeeded
             for state, step_data in state_steps.items():
                 if step_data.get("status") == "RUNNING":
                     step_data["status"] = "SUCCEEDED"
@@ -346,10 +324,9 @@ def parse_execution_history(history: list[dict[str, Any]]) -> list[dict[str, Any
 
         elif event_type == "MapStateEntered":
             state_name = event.get("mapStateEnteredEventDetails", {}).get("name", "")
-            current_state = state_name  # Track current state
+            current_state = state_name
             if state_name and state_name not in state_steps:
                 map_details = event.get("mapStateEnteredEventDetails", {})
-                # Try to get input to see how many items will be processed
                 input_data = map_details.get("input", "{}")
                 try:
                     input_json = (
@@ -372,12 +349,10 @@ def parse_execution_history(history: list[dict[str, Any]]) -> list[dict[str, Any
 
         elif event_type == "MapStateSucceeded":
             map_details = event.get("mapStateSucceededEventDetails", {})
-            # Find the map state and mark as succeeded
             for state, step_data in state_steps.items():
                 if state == "ProcessRekognitionJobs" or "Map" in step_data.get("step", ""):
                     step_data["status"] = "SUCCEEDED"
                     step_data["completed_at"] = timestamp_dt
-                    # Try to get output to see how many items were processed
                     output_data = map_details.get("output", "{}")
                     try:
                         output_json = (
@@ -392,7 +367,6 @@ def parse_execution_history(history: list[dict[str, Any]]) -> list[dict[str, Any
 
         elif event_type == "MapIterationStarted":
             iteration_details = event.get("mapIterationStartedEventDetails", {})
-            # Track individual map iterations
             iteration_index = iteration_details.get("index", 0)
             if "ProcessRekognitionJobs" in state_steps:
                 map_step = state_steps["ProcessRekognitionJobs"]
@@ -438,7 +412,6 @@ def parse_execution_history(history: list[dict[str, Any]]) -> list[dict[str, Any
             wait_details = event.get("waitStateEnteredEventDetails", {})
             seconds = wait_details.get("seconds", 0)
             if seconds:
-                # Add wait step if not already tracked
                 wait_state_name = wait_details.get("name", "WaitForJob")
                 if wait_state_name not in state_steps:
                     state_steps[wait_state_name] = {
@@ -483,9 +456,7 @@ def parse_execution_history(history: list[dict[str, Any]]) -> list[dict[str, Any
                 }
             )
 
-    # Add all state steps to the list and calculate durations
     for step_data in state_steps.values():
-        # Calculate duration if both timestamps are available
         if step_data.get("timestamp") and step_data.get("completed_at"):
             duration = (step_data["completed_at"] - step_data["timestamp"]).total_seconds()
             step_data["duration"] = duration
@@ -495,7 +466,6 @@ def parse_execution_history(history: list[dict[str, Any]]) -> list[dict[str, Any
 
         steps.append(step_data)
 
-    # Sort by order (preserve execution order)
     steps.sort(key=lambda x: (x.get("order", 0), x.get("timestamp") or datetime.min))
 
     return steps
@@ -507,10 +477,8 @@ def get_pipeline_stats() -> dict[str, int]:
         runtime_config = get_runtime_config()
         storage = get_s3_storage()
 
-        # Query all indexed video media
         all_records = query_processed_media(media_type="video", limit=10000)
 
-        # Count all raw video files by source (across all campaigns)
         video_raw_wikimedia = sum(
             1
             for key in storage.list_keys(
@@ -529,7 +497,6 @@ def get_pipeline_stats() -> dict[str, int]:
         )
         video_raw_total = video_raw_wikimedia + video_raw_pixabay
 
-        # Count processed by source
         video_processed_wikimedia = sum(1 for r in all_records if "wikimedia" in r.s3_key)
         video_processed_pixabay = sum(1 for r in all_records if "pixabay" in r.s3_key)
         video_processed_total = len(all_records)
@@ -554,10 +521,8 @@ def get_pipeline_stats() -> dict[str, int]:
         }
 
 
-# Main dashboard
 st.title("🎬 Video Pipeline Dashboard")
 
-# Sidebar for controls
 with st.sidebar:
     st.header("Controls")
 
@@ -571,14 +536,12 @@ with st.sidebar:
         help="Select a predefined campaign that works well, or type a custom one below",
     )
 
-    # Allow custom campaign input
     custom_campaign = st.text_input(
         "Or enter custom campaign",
         value="" if selected_campaign in PREDEFINED_CAMPAIGNS else selected_campaign,
         help="Leave empty to use selected campaign above",
     )
 
-    # Use custom if provided, otherwise use selected
     if custom_campaign and custom_campaign.strip():
         st.session_state.campaign = custom_campaign.lower().strip()
     else:
@@ -593,7 +556,6 @@ with st.sidebar:
 
     st.divider()
 
-    # Trigger button
     if st.button("🎥 Run Video Pipeline", type="primary", use_container_width=True):
         try:
             runtime_config = get_runtime_config()
@@ -617,7 +579,6 @@ with st.sidebar:
 
     st.divider()
 
-    # About section (compact, below button)
     with st.expander("ℹ️ About This Dashboard", expanded=False):
         st.markdown("""
         This dashboard provides manual control and monitoring for a video processing pipeline built as a single-day demonstration of data engineering capabilities. The pipeline ingests Creative Commons videos from public APIs (Wikimedia Commons and Pixabay), enriches them with Amazon Rekognition computer vision, and stores structured metadata.
@@ -632,7 +593,6 @@ with st.sidebar:
         **Automated:** Runs weekly on Mondays via EventBridge. Manual triggers available here for testing and demonstration.
         """)
 
-# Main content - Overall Statistics (without title)
 pipeline_stats = get_pipeline_stats()
 
 col1, col2 = st.columns(2)
@@ -657,36 +617,27 @@ with col4:
 
 st.divider()
 
-# Recent executions table
 st.markdown("### 📋 Recent VIDEO Executions")
 recent_executions = get_recent_executions(limit=10)
 
-# Check if there are running executions for auto-refresh
 has_running = False
 if recent_executions:
     has_running = any(e["status"] == "RUNNING" for e in recent_executions)
     if has_running:
-        # Show auto-refresh indicator
         st.info("🔄 Execution in progress... Page will auto-refresh")
-
-        # Use Streamlit's built-in auto-refresh mechanism
-        # This will refresh the page after 5 seconds if there's a running execution
         time.sleep(5)
         st.rerun()
 
 if recent_executions:
-    # Extract execution ID from ARN
     for exec_item in recent_executions:
         arn = exec_item.get("execution_arn", "")
         if arn:
-            # Extract UUID from ARN (last part after last colon)
             exec_id = arn.split(":")[-1]
             exec_item["execution_id"] = exec_id
 
     df_data = []
     for exec_item in recent_executions:
         status = exec_item["status"]
-        # Add icon and color based on status
         if status == "SUCCEEDED":
             status_display = "✅ SUCCEEDED"
         elif status == "FAILED":
@@ -711,11 +662,8 @@ if recent_executions:
             }
         )
 
-    import pandas as pd
-
     df = pd.DataFrame(df_data)
 
-    # Style the dataframe with colors
     def style_status(val):
         if "✅" in str(val):
             return "color: #00ff00; font-weight: bold"
@@ -740,12 +688,10 @@ else:
 
 st.divider()
 
-# Last execution summary (compact, after table)
 recent_executions_summary = get_recent_executions(limit=1)
 if recent_executions_summary:
     last_exec = recent_executions_summary[0]
 
-    # Extract execution ID from ARN if not already present
     if "execution_id" not in last_exec or not last_exec.get("execution_id"):
         arn = last_exec.get("execution_arn", "")
         if arn:
@@ -754,7 +700,6 @@ if recent_executions_summary:
 
     status = last_exec["status"]
 
-    # Status display with icon (compact)
     if status == "SUCCEEDED":
         status_icon = "✅"
         status_color = "#00ff00"
@@ -776,7 +721,6 @@ if recent_executions_summary:
 
     st.markdown("### 📊 Last Execution Summary")
 
-    # Compact display
     col1, col2, col3, col4 = st.columns(4)
 
     with col1:
@@ -794,7 +738,6 @@ if recent_executions_summary:
     with col4:
         st.write(f"**Files Processed:** {last_exec['files_processed']}")
 
-    # Show videos received and processed
     ingested_videos = last_exec.get("ingested_videos", [])
     ingested_by_source = last_exec.get("ingested_by_source", {})
     processed_videos = last_exec.get("processed_videos", [])
@@ -802,7 +745,6 @@ if recent_executions_summary:
     if ingested_videos or ingested_by_source:
         st.markdown("#### 📥 Videos Received")
 
-        # Show by source if available
         if ingested_by_source:
             for source_name, videos in ingested_by_source.items():
                 if videos:
@@ -831,7 +773,6 @@ if recent_executions_summary:
                 labels_count = summary.get("total_labels", 0)
                 st.write(f"- **{video_name}** ({labels_count} labels detected)")
 
-    # Show Step Functions execution log
     st.markdown("#### Step Functions Execution Log")
 
     execution_arn = last_exec.get("execution_arn", "")
@@ -841,8 +782,6 @@ if recent_executions_summary:
             if history:
                 steps = parse_execution_history(history)
 
-                # Enrich steps with data from execution output
-                # Get execution details to enrich log
                 try:
                     runtime_config = get_runtime_config()
                     resources = build_aws_resources(aws_config=runtime_config.aws)
@@ -1013,7 +952,6 @@ if recent_executions_summary:
                                                 log_text_lines.append(f"      ID: {source_id}")
                                                 log_text_lines.append(f"      S3 Key: {s3_key}")
 
-                            # Rekognition start details
                             if "jobs" in output:
                                 jobs = output.get("jobs", [])
                                 jobs_count = len(jobs)
@@ -1027,7 +965,6 @@ if recent_executions_summary:
                                     log_text_lines.append(f"      Video: {video_key}")
                                     log_text_lines.append(f"      Status: {job_status}")
 
-                            # Finalization details
                             if "processed_count" in output:
                                 log_text_lines.append(
                                     f"  → Videos Processed: {output.get('processed_count', 0)}"
@@ -1061,13 +998,11 @@ if recent_executions_summary:
                                                         f"      Top Labels: {', '.join(label_names)}"
                                                     )
 
-                            # Indexing details
                             if "indexed_count" in output:
                                 log_text_lines.append(
                                     f"  → Videos Indexed: {output.get('indexed_count', 0)}"
                                 )
 
-                        # Show error if failed
                         if log_entry["status"] == "FAILED":
                             if log_entry["error"]:
                                 log_text_lines.append(f"  ERROR: {log_entry['error']}")

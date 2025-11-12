@@ -52,7 +52,6 @@ def index_processed_media(
 
     processed_at = datetime.now(UTC).isoformat()
 
-    # Create composite key: media_type#campaign#timestamp
     timestamp_part = ingested_at.replace("_", "")
     item_id = f"{media_type}#{campaign}#{timestamp_part}"
 
@@ -65,7 +64,7 @@ def index_processed_media(
         "ingested_at": ingested_at,
         "processed_at": processed_at,
         "metadata": metadata,
-        "ttl": int(datetime.now(UTC).timestamp()) + (365 * 24 * 60 * 60),  # 1 year TTL
+        "ttl": int(datetime.now(UTC).timestamp()) + (365 * 24 * 60 * 60),
     }
 
     def _put_item() -> dict:
@@ -74,7 +73,6 @@ def index_processed_media(
         dynamodb_item: dict[str, Any] = {}
         for k, v in item.items():
             if k == "metadata":
-                # Store metadata as JSON string
                 dynamodb_item[k] = {"S": json.dumps(v)}
             elif isinstance(v, str):
                 dynamodb_item[k] = {"S": v}
@@ -136,7 +134,6 @@ def query_processed_media(
         resources = build_aws_resources(aws_config=aws_config)
         dynamodb_client = resources["dynamodb"]
 
-    # Simple scan for now (would use GSI in production)
     scan_params: dict[str, Any] = {
         "TableName": aws_config.metadata_table,
         "Limit": limit,
@@ -151,7 +148,6 @@ def query_processed_media(
 
         records = []
         for item in items:
-            # Filter by campaign and media_type if specified
             item_campaign = item.get("campaign", {}).get("S", "")
             item_type = item.get("media_type", {}).get("S", "")
 
@@ -160,7 +156,6 @@ def query_processed_media(
             if media_type and item_type != media_type:
                 continue
 
-            # Parse metadata (stored as JSON string)
             metadata_str = item.get("metadata", {}).get("S", "{}")
             try:
                 import json

@@ -110,7 +110,6 @@ def finalize_video_analysis(
     labels = normalize_rekognition_labels(rekognition_response)
     moderation_labels = rekognition_response.get("ModerationLabels", [])
 
-    # Create summary
     top_labels = sorted(labels, key=lambda x: x.confidence, reverse=True)[:10]
     summary = {
         "total_labels": len(labels),
@@ -153,7 +152,6 @@ def save_analysis_to_s3(
 
     storage = S3Storage(s3_client)
 
-    # Convert to dict for JSON serialization
     analysis_dict = {
         "video_s3_key": analysis.video_s3_key,
         "duration": analysis.duration,

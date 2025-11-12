@@ -46,8 +46,7 @@ class VideoMetadata:
     file_size: int
     s3_key: str
     ingested_at: str
-    # Source-specific fields
-    source_id: str | None = None  # e.g., Pixabay video ID or Wikimedia title
+    source_id: str | None = None
 
 
 class VideoSourceClient(Protocol):
@@ -84,7 +83,7 @@ class WikimediaCommonsClient:
             "format": "json",
             "generator": "search",
             "gsrsearch": f"{query} filetype:{file_type}",
-            "gsrnamespace": 6,  # File namespace
+            "gsrnamespace": 6,
             "gsrlimit": limit,
             "prop": "imageinfo|categories",
             "iiprop": "url|size|extmetadata",
@@ -106,7 +105,6 @@ class WikimediaCommonsClient:
 
             imageinfo = page_data["imageinfo"][0]
             if imageinfo.get("mime", "").startswith("video/"):
-                # Check if it has CC license category
                 categories = page_data.get("categories", [])
                 has_cc_license = any(
                     cat.get("title", "").startswith("Category:CC") for cat in categories
@@ -157,12 +155,12 @@ class PixabayClient:
         params = {
             "key": self.api_key,
             "q": query,
-            "video_type": "all",  # "all", "film", "animation"
-            "category": "all",  # "all", "backgrounds", "fashion", "nature", etc.
-            "min_width": 640,  # Minimum video width
+            "video_type": "all",
+            "category": "all",
+            "min_width": 640,
             "safesearch": "true",
-            "per_page": max(min(limit, 20), 3),  # Pixabay requires min 3, max 20 per page
-            "order": "popular",  # "popular", "latest"
+            "per_page": max(min(limit, 20), 3),
+            "order": "popular",
         }
 
         response = self.session.get(PIXABAY_API_BASE, params=params, timeout=30)
@@ -174,13 +172,11 @@ class PixabayClient:
 
         results = []
         for hit in data.get("hits", [])[:limit]:
-            # Pixabay videos have multiple formats, prefer medium quality
             video_info = hit.get("videos", {})
             video_url = None
             video_size = 0
             mime_type = "video/mp4"
 
-            # Prefer medium quality, fallback to small or large
             if "medium" in video_info:
                 video_url = video_info["medium"].get("url", "")
                 video_size = video_info["medium"].get("size", 0)
@@ -194,7 +190,6 @@ class PixabayClient:
             if not video_url:
                 continue
 
-            # Pixabay videos are free to use (Pixabay License, similar to CC0)
             results.append(
                 {
                     "source": "pixabay",
@@ -206,7 +201,7 @@ class PixabayClient:
                     "author": hit.get("user", ""),
                     "license": "Pixabay License (Free for commercial use)",
                     "description": hit.get("tags", ""),
-                    "duration": hit.get("duration", 0),  # Duration in seconds
+                    "duration": hit.get("duration", 0),
                 }
             )
 
@@ -276,7 +271,6 @@ def _ingest_from_source(
 
         metadata_list = []
 
-        # Check existing videos to avoid duplicates
         from shared.index import query_processed_media
 
         existing_videos = query_processed_media(
@@ -296,7 +290,6 @@ def _ingest_from_source(
             video_source = video.get("source", source_name)
             source_id = video.get("source_id")
 
-            # Skip if video already processed
             if source_id and source_id in existing_source_ids:
                 LOGGER.info(
                     "Skipping duplicate video from %s: %s (source_id: %s)",
@@ -314,16 +307,14 @@ def _ingest_from_source(
                     max_attempts=3,
                 )
 
-                # Extract file extension from MIME type or URL
                 mime_type = video.get("mime", "video/mp4")
                 if "mp4" in mime_type or "mp4" in video_url:
                     ext = "mp4"
                 elif "webm" in mime_type or "webm" in video_url:
                     ext = "webm"
                 else:
-                    ext = "mp4"  # Default
+                    ext = "mp4"
 
-                # Create safe filename
                 safe_title = video_title.replace("File:", "").replace(" ", "_")
                 safe_title = "".join(c for c in safe_title if c.isalnum() or c in ("_", "-", "."))[
                     :100
@@ -333,8 +324,6 @@ def _ingest_from_source(
                 else:
                     file_name = f"{video_source}_{safe_title}"
 
-                # Separate by source in S3 path for better data engineering practices
-                # Structure: media-raw/video/{source}/{campaign}/{timestamp}/{file_name}
                 s3_key = f"media-raw/video/{video_source}/{campaign}/{timestamp}/{file_name}.{ext}"
 
                 metadata_dict = {
@@ -360,7 +349,7 @@ def _ingest_from_source(
                     license=video.get("license", ""),
                     author=video.get("author", ""),
                     description=video.get("description", ""),
-                    duration=video.get("duration"),  # Pixabay provides this
+                    duration=video.get("duration"),
                     file_size=video.get("size", len(video_data)),
                     s3_key=s3_key,
                     ingested_at=timestamp,
@@ -393,7 +382,7 @@ def _ingest_from_source(
             e,
             exc_info=True,
         )
-        return []  # Return empty list on source failure, don't fail entire batch
+        return []
 
 
 def ingest_video_batch(
@@ -410,8 +399,7 @@ def ingest_video_batch(
     By default, ingests from both Wikimedia Commons and Pixabay simultaneously.
     The batch_size is distributed evenly between sources (e.g., batch_size=10 = 5 from each).
 
-    Following data engineering best practices, results are kept SEPARATED by source
-    for better traceability, compliance, and independent analysis.
+    Results are kept separated by source for traceability, compliance, and independent analysis.
 
     Args:
         campaign: Search query/campaign name
@@ -441,7 +429,6 @@ def ingest_video_batch(
         # Default: use both sources
         sources_to_use = [VideoSource.WIKIMEDIA, VideoSource.PIXABAY]
     else:
-        # Normalize source to VideoSource enum
         if isinstance(source, str):
             try:
                 sources_to_use = [VideoSource(source.lower())]
@@ -451,7 +438,6 @@ def ingest_video_batch(
         else:
             sources_to_use = [source]
 
-    # Get API key from environment if not provided and Pixabay is in use
     if VideoSource.PIXABAY in sources_to_use and not pixabay_api_key:
         import os
 
@@ -461,14 +447,12 @@ def ingest_video_batch(
                 "Pixabay API key not found. Skipping Pixabay source. "
                 "Set MEDIA_PIPELINES_PIXABAY_API_KEY environment variable to enable Pixabay."
             )
-            # Remove Pixabay from sources if no API key
             sources_to_use = [s for s in sources_to_use if s != VideoSource.PIXABAY]
 
     if not sources_to_use:
         LOGGER.error("No valid sources available for video ingestion")
         return {}
 
-    # Distribute batch_size across sources
     videos_per_source = max(1, batch_size // len(sources_to_use))
     timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
 
@@ -480,12 +464,6 @@ def ingest_video_batch(
         videos_per_source,
     )
 
-    # Ingest from all sources but KEEP SEPARATED by source
-    # This follows data engineering best practices:
-    # - Better traceability (know exactly which source each file came from)
-    # - Different licenses/compliance requirements per source
-    # - Independent analysis and quality checks per source
-    # - Easier debugging and troubleshooting
     results_by_source: dict[str, list[VideoMetadata]] = {}
 
     for source in sources_to_use:
@@ -503,8 +481,7 @@ def ingest_video_batch(
 
     total_ingested = sum(len(metadata) for metadata in results_by_source.values())
     LOGGER.info(
-        "Total ingested: %d video files for campaign: %s from %d source(s) - "
-        "Results kept separated by source for data engineering best practices",
+        "Total ingested: %d video files for campaign: %s from %d source(s)",
         total_ingested,
         campaign,
         len(sources_to_use),

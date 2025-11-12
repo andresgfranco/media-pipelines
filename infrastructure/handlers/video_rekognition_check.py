@@ -14,19 +14,16 @@ LOGGER.setLevel(logging.INFO)
 def handler(event: dict, context: object) -> dict:
     """Lambda handler for checking Rekognition job status."""
     try:
-        # Extract job_id from event (from Map state iteration)
         job_id = event.get("job_id", "")
 
         if not job_id:
             raise ValueError("job_id is required")
 
-        # Get AWS configuration
         runtime_config = get_runtime_config()
         aws_config = runtime_config.aws
 
         LOGGER.info("Checking status for Rekognition job: %s", job_id)
 
-        # Get job status
         status = get_job_status(
             job_id=job_id,
             aws_config=aws_config,

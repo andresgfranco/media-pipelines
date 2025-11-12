@@ -14,7 +14,6 @@ LOGGER.setLevel(logging.INFO)
 def handler(event: dict, context: object) -> dict:
     """Lambda handler for indexing processed video."""
     try:
-        # Extract parameters from event (from finalization step)
         campaign = event.get("campaign", "unknown")
         results = event.get("finalization", {}).get("results", [])
 
@@ -34,7 +33,6 @@ def handler(event: dict, context: object) -> dict:
             if not video_s3_key or not processed_key:
                 continue
 
-            # Extract ingested_at from s3_key path
             parts = video_s3_key.split("/")
             ingested_at = parts[-2] if len(parts) >= 2 else ""
 

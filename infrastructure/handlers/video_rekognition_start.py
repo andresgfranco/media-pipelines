@@ -14,7 +14,6 @@ LOGGER.setLevel(logging.INFO)
 def handler(event: dict, context: object) -> dict:
     """Lambda handler for starting Rekognition jobs."""
     try:
-        # Extract parameters from event (from previous step)
         metadata_list = event.get("metadata", [])
 
         if not metadata_list:
@@ -23,7 +22,6 @@ def handler(event: dict, context: object) -> dict:
                 "jobs": [],
             }
 
-        # Get AWS configuration
         runtime_config = get_runtime_config()
         aws_config = runtime_config.aws
 
